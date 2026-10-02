@@ -1,0 +1,42 @@
+{
+  "name": "@lokeraar/pi-opendesign-bridge",
+  "version": "0.1.0",
+  "description": "OpenDesign provider bridge for Pi: /login once and the live OpenDesign catalog appears in /model with real structure — context window, max output, reasoning levels, input modalities — auto-synced from the endpoint.",
+  "type": "module",
+  "main": "./index.ts",
+  "files": [
+    "*.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "provider",
+    "ai",
+    "ai-provider",
+    "llm",
+    "opendesign",
+    "open-design",
+    "openai-compatible",
+    "model-catalog",
+    "model-sync",
+    "ai-model"
+  ],
+  "author": "Lokeraar",
+  "license": "MIT",
+  "homepage": "https://pi.dev/packages/@lokeraar/pi-opendesign-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lokeraar/pi-opendesign-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Lokeraar/pi-opendesign-bridge/issues"
+  }
+}

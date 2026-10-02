@@ -3,6 +3,10 @@
 
 # @lokeraar/pi-opendesign-bridge
 
+<a href="https://github.com/Gentleman-Programming/gentle-ai">
+  <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI" />
+</a>
+
 OpenDesign provider bridge for [pi](https://github.com/earendil-works/pi): registers the `opendesign` provider (`https://amr-link.open-design.ai/v1`) via `pi.registerProvider()` and keeps its catalog in sync with the endpoint. After `/login opendesign`, the models you can actually use appear in `/model` **with their real structure** — input modalities, context window, max output, reasoning levels and `off` behavior — instead of generic guesses.
 
 > 📦 Page: [pi.dev/packages/@lokeraar/pi-opendesign-bridge](https://pi.dev/packages/@lokeraar/pi-opendesign-bridge)

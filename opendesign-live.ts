@@ -47,6 +47,21 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type ThinkingLevelMap = Partial<Record<ThinkingLevel, string | null>>;
 
 /** Model entry as returned by refreshModels (ProviderModelConfig). */
+/**
+ * Where each value came from. Lets a reader tell a MEASURED value from a
+ * DECLARED one without trusting the bridge: `contextWindow` is never probed
+ * (an over-long prompt is silently truncated, indistinguishable from success),
+ * so it is always at best the endpoint's own claim.
+ */
+export type ValueOrigin = "curated" | "measured" | "gateway" | "vanilla";
+
+export interface ValueProvenance {
+  contextWindow: ValueOrigin;
+  maxTokens: ValueOrigin;
+  thinkingLevelMap: ValueOrigin;
+  input: ValueOrigin;
+}
+
 export interface LiveModelConfig {
   id: string;
   name: string;
@@ -191,6 +206,16 @@ export function readProviderConfig(agentDir: string): ModelsJsonProviderLike | u
 /** Fill required fields and merge provider-level compat onto one entry. */
 function normalize(m: LiveModelConfig, providerCompat?: Record<string, unknown>): LiveModelConfig {
   const mergedCompat = { supportsDeveloperRole: false, ...(providerCompat ?? {}), ...(m.compat ?? {}) };
+  // Invariant: the ONLY models that reach here without provenance are the ones
+  // read from models.json / STATIC_MODELS, i.e. hand-written. Probe and
+  // conservativeModel always set it, and stored entries carry it forward via
+  // the spread. So an absent provenance means "curated", by construction.
+  const provenance: ValueProvenance = m.provenance ?? {
+    contextWindow: "curated",
+    maxTokens: "curated",
+    thinkingLevelMap: "curated",
+    input: "curated",
+  };
   return {
     ...m,
     name: m.name ?? m.id,
@@ -202,6 +227,7 @@ function normalize(m: LiveModelConfig, providerCompat?: Record<string, unknown>)
     contextWindow: m.contextWindow && m.contextWindow > 0 ? m.contextWindow : 128_000,
     maxTokens: m.maxTokens && m.maxTokens > 0 ? m.maxTokens : 16_384,
     compat: mergedCompat,
+    provenance,
   };
 }
 
@@ -255,7 +281,8 @@ interface LiveListing {
 /** Non-chat endpoint ids the chat picker must never see (embed/tts/image-gen...). */
 const NOISE_PATTERN = /\b(embed|embedding|tts|whisper|dall-?e|clip|moderation|rerank|reranker)\b|^image[-_]|[-_]embed/i;
 
-async function fetchLiveListing(
+/** Fetch + normalize the endpoint catalog. Exported for the maintenance CLI. */
+export async function fetchLiveListing(
   baseUrl: string,
   key: string,
   signal: AbortSignal,
@@ -318,6 +345,12 @@ function conservativeModel(listing: LiveListing): LiveModelConfig {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     compat: { supportsDeveloperRole: false },
     thinkingLevelMap: { off: null, minimal: null, low: null, medium: "medium", high: null, xhigh: null, max: null },
+    provenance: {
+      contextWindow: listing.contextLimit ? "gateway" : "vanilla",
+      maxTokens: listing.contextBudget ? "gateway" : "vanilla",
+      thinkingLevelMap: "vanilla",
+      input: listing.inputModalities.length ? "gateway" : "vanilla",
+    } satisfies ValueProvenance,
   });
 }
 
@@ -407,6 +440,12 @@ export async function probeNewModel(
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     compat: { supportsDeveloperRole: false },
     thinkingLevelMap: map,
+    provenance: {
+      contextWindow: listing.contextLimit ? "gateway" : "vanilla",
+      maxTokens: "measured",
+      thinkingLevelMap: "measured",
+      input: listing.inputModalities.length ? "gateway" : "vanilla",
+    } satisfies ValueProvenance,
   });
 }
 
@@ -433,6 +472,13 @@ export interface ReprobeFinding {
   curated: unknown;
   measured: unknown;
   status: "changed" | "match" | "probe-failed";
+  /**
+   * What the "measured" side actually IS. Critical: `maxTokens` comes from a
+   * real probe, but `contextWindow` is only what the gateway DECLARES. Reading
+   * a context drift as "my curated value is wrong" would overwrite a verified
+   * number with an unverified one.
+   */
+  basis: "probe" | "gateway-declaration" | "none";
 }
 
 export interface ReprobeReport {
@@ -459,6 +505,20 @@ function numericClose(a: number, b: number): boolean {
   return Math.abs(a - b) <= 0.05 * Math.max(Math.abs(a), Math.abs(b));
 }
 
+/**
+ * Which side of the comparison is authoritative. The probe measured
+ * `maxTokens`, the effort levels and `reasoning`; `contextWindow` and `input`
+ * are only what the endpoint DECLARED, because context cannot be probed
+ * (an over-long prompt is silently truncated, which looks identical to success).
+ */
+const FIELD_BASIS: Record<ReprobeFinding["field"], ReprobeFinding["basis"]> = {
+  contextWindow: "gateway-declaration",
+  maxTokens: "probe",
+  thinkingLevelMap: "probe",
+  reasoning: "probe",
+  input: "gateway-declaration",
+};
+
 function diffCuratedVsMeasured(curated: LiveModelConfig, measured: LiveModelConfig): ReprobeFinding[] {
   const out: ReprobeFinding[] = [];
   const numeric = (field: "contextWindow" | "maxTokens") => {
@@ -473,11 +533,11 @@ function diffCuratedVsMeasured(curated: LiveModelConfig, measured: LiveModelConf
   };
   for (const field of ["contextWindow", "maxTokens"] as const) {
     const d = numeric(field);
-    if (d) out.push({ id: curated.id, status: "changed", ...d });
+    if (d) out.push({ id: curated.id, status: "changed", basis: FIELD_BASIS[field], ...d });
   }
   for (const field of ["thinkingLevelMap", "reasoning", "input"] as const) {
     const d = exact(field);
-    if (d) out.push({ id: curated.id, status: "changed", ...d });
+    if (d) out.push({ id: curated.id, status: "changed", basis: FIELD_BASIS[field], ...d });
   }
   return out;
 }
@@ -496,8 +556,14 @@ function writeReprobeReport(agentDir: string, report: ReprobeReport): void {
 
   const tag = "[opendesign:reprobe]";
   console.error(`${tag} ${report.changed.length} drift(s), ${report.retired.length} retired, ${report.audited} audited → ${path}`);
+  let warnedGateway = false;
   for (const f of report.changed) {
-    console.error(`${tag}   ${f.id}.${f.field}: curated=${fmt(f.curated)} measured=${fmt(f.measured)}`);
+    const suffix = f.basis === "gateway-declaration" ? "  [gateway-declaration: verify against vendor docs]" : "";
+    if (f.basis === "gateway-declaration") warnedGateway = true;
+    console.error(`${tag}   ${f.id}.${f.field}: curated=${fmt(f.curated)} ${f.basis}=${fmt(f.measured)}${suffix}`);
+  }
+  if (warnedGateway) {
+    console.error(`${tag}   ^ those rows are NOT measurements. The endpoint declared them; verify against vendor docs before changing your curated value.`);
   }
   for (const id of report.retired) {
     console.error(`${tag}   RETIRED ${id}: curated but absent from ${report.baseUrl}/models — remove it from models.json`);
@@ -530,7 +596,7 @@ export async function runReprobeAudit(options: {
     audited++;
     const measured = await probeNewModel(listing, options.baseUrl, options.key, options.signal);
     if (!measured) {
-      findings.push({ id: entry.id, field: "maxTokens", curated: null, measured: null, status: "probe-failed" });
+      findings.push({ id: entry.id, field: "maxTokens", curated: null, measured: null, status: "probe-failed", basis: "none" });
       continue;
     }
     findings.push(...diffCuratedVsMeasured(entry, measured));
@@ -547,6 +613,70 @@ export async function runReprobeAudit(options: {
   };
   writeReprobeReport(options.agentDir, report);
   return report;
+}
+
+// ---------------------------------------------------------------------------
+// Retirement ledger — closes the offline-resurrection loop
+//
+// Pi's store is a cache, and Phase 1 (offline) unions `stored + curated`. So a
+// model the endpoint retired stayed alive forever: it was re-added from
+// models.json and re-persisted on every offline refresh. `publish` cannot carry
+// a side-car field (only `models` + `checkedAt`), so the ledger lives in its own
+// file next to the store.
+//
+// It records only ids a SUCCESSFUL live check did not serve, so it is
+// self-correcting: if the endpoint lists the model again, Phase 2 drops it from
+// the ledger and it returns with its curated values intact.
+// ---------------------------------------------------------------------------
+
+const RETIRED_FILE = "opendesign-retired.json";
+
+export interface RetiredLedger {
+  updatedAt: number;
+  /** id -> epoch ms of the live check that first stopped serving it. */
+  retired: Record<string, number>;
+}
+
+function readRetiredLedger(agentDir: string): RetiredLedger {
+  try {
+    const parsed = JSON.parse(readFileSync(join(agentDir, RETIRED_FILE), "utf8")) as RetiredLedger;
+    if (parsed && typeof parsed === "object" && parsed.retired && typeof parsed.retired === "object") {
+      return parsed;
+    }
+  } catch {
+    // Missing or corrupt: treat as "nothing retired" so we never hide a model.
+  }
+  return { updatedAt: 0, retired: {} };
+}
+
+function writeRetiredLedger(agentDir: string, ledger: RetiredLedger): void {
+  try {
+    writeFileSync(join(agentDir, RETIRED_FILE), `${JSON.stringify(ledger, null, 2)}\n`);
+  } catch {
+    // Read-only agent dir must not break the refresh.
+  }
+}
+
+/** Record which curated/stored ids the endpoint stopped serving. */
+function reconcileRetired(
+  agentDir: string,
+  liveIds: ReadonlySet<string>,
+  candidates: readonly LiveModelConfig[],
+): RetiredLedger {
+  const ledger = readRetiredLedger(agentDir);
+  const now = Date.now();
+  const next: Record<string, number> = { ...ledger.retired };
+  // Served again by the endpoint → no longer retired.
+  for (const id of Object.keys(next)) if (liveIds.has(id)) delete next[id];
+  // Newly retired: candidate ids that a SUCCESSFUL live check did not serve.
+  for (const m of candidates) {
+    if (liveIds.has(m.id)) continue;
+    next[m.id] ??= now; // keep the ORIGINAL retirement date
+  }
+  if (JSON.stringify(next) === JSON.stringify(ledger.retired)) return ledger;
+  const updated: RetiredLedger = { updatedAt: now, retired: next };
+  writeRetiredLedger(agentDir, updated);
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -602,11 +732,18 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
     // ---- Phase 1: cache-only restore (runs on every runtime creation) ----
     if (!ctx.allowNetwork) {
       if (!storedModels.length) return undefined;
+      // Ids a previous SUCCESSFUL live check found retired must not come back,
+      // neither from the store nor from models.json. Without this the union
+      // below re-added and re-persisted a dead model on every offline refresh.
+      const retiredIds = new Set(Object.keys(readRetiredLedger(options.agentDir).retired));
+      const alive = (m: LiveModelConfig) => !retiredIds.has(m.id);
+      const liveStored = storedModels.filter(alive);
+      const liveCurated = curated.filter(alive);
       // Union of last-known membership + curated ids; curated VALUES win.
       const ids: string[] = [];
-      for (const m of [...storedModels, ...curated]) if (!ids.includes(m.id)) ids.push(m.id);
+      for (const m of [...liveStored, ...liveCurated]) if (!ids.includes(m.id)) ids.push(m.id);
       const merged = ids.map((id) => {
-        const storedEntry = storedModels.find((m) => m.id === id);
+        const storedEntry = liveStored.find((m) => m.id === id);
         return normalize(curatedById.get(id) ?? (storedEntry as LiveModelConfig), cfg?.compat);
       });
       if (ctx.signal.aborted) return undefined;
@@ -625,6 +762,12 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
 
     const live = await fetchLiveListing(baseUrl, key, ctx.signal);
     if (!live || ctx.signal.aborted) return undefined;
+
+    // This fetch SUCCEEDED, so it is authoritative about membership: whatever it
+    // did not serve is now retired, unless the fetch was empty.
+    if (live.length) {
+      reconcileRetired(options.agentDir, new Set(live.map((l) => l.id)), [...storedModels, ...curated]);
+    }
 
     const storedById = new Map(storedModels.map((m) => [m.id, m]));
     const out: LiveModelConfig[] = [];

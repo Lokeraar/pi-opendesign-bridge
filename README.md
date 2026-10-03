@@ -149,11 +149,52 @@ Curated values live in `~/.pi/agent/models.json` (optional — the bundled catal
 Layout (flat, mirrors `@fanchaozz/provider-manager`):
 
 ```
+scripts/probe-models.mjs # curated-layer maintenance CLI (report-only)
 index.ts            # registration + refreshModels wiring (extension entry)
 opendesign-live.ts  # live fetch engine + auto-probe + bundled catalog (node builtins only)
 ```
 
 `opendesign-live.ts` intentionally imports nothing from Pi, so its logic can be exercised directly with `node` (≥ 22.6 type stripping) against a mock gateway: membership add/drop, curated precedence, probe budgets, kill switch.
+
+### Where each value comes from
+
+Every published model carries a `provenance` block, so you never have to guess whether a number was measured or merely claimed:
+
+| `provenance` | Meaning |
+|---|---|
+| `curated` | Hand-verified in `models.json` / `STATIC_MODELS`. Wins over everything. |
+| `measured` | A real probe request against the endpoint. Only `maxTokens`, the effort levels and `reasoning` qualify. |
+| `gateway` | The endpoint **declared** it. `contextWindow` and `input` are always at best this. |
+| `vanilla` | The conservative fallback. Used only when the probe could not run. |
+
+`contextWindow` is never measured: an over-long prompt is silently truncated, which is indistinguishable from success. Treat it as a claim, and confirm it against vendor documentation before curating it.
+
+### Maintaining the curated layer
+
+Two tools, both report-only — the diff is the product, you decide what to apply:
+
+```
+# Re-probe curated models, print a table and the exact models.json patch
+node --experimental-strip-types scripts/probe-models.mjs --all
+node --experimental-strip-types scripts/probe-models.mjs gpt-6-luna kimi-k2.7-code
+```
+
+```
+# Re-probe after an interactive refresh; writes a report and prints drift to stderr
+PI_OPENDESIGN_REPROBE=1 pi
+```
+
+The report goes to `~/.pi/agent/opendesign-reprobe.json`. Findings are labelled by what the comparison actually rests on: `probe` rows are measurements, `gateway-declaration` rows are not — confirm those against vendor docs before changing a curated value.
+
+Both require a reachable endpoint **with quota**. An exhausted plan answers HTTP 402 and every row comes back `probe-failed`; no value is ever guessed around it.
+
+### Retired models
+
+Membership is live-only: a model the endpoint stops serving disappears from the published catalog. Because Pi's store is a cache and the offline phase unions stored + curated, that used to resurrect dead models forever. The extension now keeps a small ledger (`~/.pi/agent/opendesign-retired.json`) of ids a **successful** live check stopped serving, and skips them offline. It self-corrects: if the endpoint lists the model again, it is un-retired and returns with its curated values intact.
+
+`models.json` is yours — `probe-models.mjs` reports retired ids so you can remove them from the config.
+
+Kill switch: `PI_OPENDESIGN_LIVE=0` skips the live layer entirely.
 
 Manual verification after changes:
 

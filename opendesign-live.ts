@@ -27,13 +27,16 @@
  *   • conservative placeholder on failure — a broken probe never blocks refresh.
  *
  * Kill switch: `PI_OPENDESIGN_LIVE=0` (or `false`/`off`) skips the live layer.
+ * Maintenance: `PI_OPENDESIGN_REPROBE=1` re-probes the curated ids after a
+ *   network refresh and reports ceiling/level drift plus retired ids to
+ *   `<agentDir>/opendesign-reprobe.json` and stderr. Report-only, never mutates.
  * Freshness: one lightweight GET per network refresh (no TTL) — "live" semantics.
  *
  * This module imports node builtins ONLY, so the test harness can import the
  * real logic natively (node ≥ 22.6 type stripping) without the Pi runtime.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -319,6 +322,19 @@ function conservativeModel(listing: LiveListing): LiveModelConfig {
 }
 
 /**
+ * HTTP statuses that mean "this parameter is wrong for this model" — the only
+ * kind of rejection that is a valid per-parameter MEASUREMENT.
+ *
+ * Everything else is a request-level failure that says nothing about the model:
+ * 402 quota exhausted, 401/403 auth, 429 rate limit, 5xx, transport errors.
+ * Treating those as measurements is how a probe concludes "this model has no
+ * reasoning levels and a 232k ceiling" while the account simply cannot pay.
+ */
+function isParameterRejection(status?: number): boolean {
+  return status === 400 || status === 422;
+}
+
+/**
  * Measure a brand-new model: level acceptance, real `off` behaviour and the
  * output ceiling. Returns `undefined` on transport failure (caller falls back
  * to `conservativeModel`); an HTTP rejection per level is a valid measurement.
@@ -332,7 +348,8 @@ export async function probeNewModel(
   const base = { model: listing.id, messages: PROBE_BODY_MESSAGES, max_tokens: 16, stream: false };
 
   const noParam = await postChat(baseUrl, key, base, signal);
-  if (noParam.net) return undefined; // gateway unreachable → do not guess from failures
+  // Quota/auth/rate-limit/5xx is not a measurement — do not derive values from it.
+  if (!noParam.ok && !isParameterRejection(noParam.status)) return undefined;
 
   // 1. effort levels
   const map: ThinkingLevelMap = {};
@@ -341,6 +358,7 @@ export async function probeNewModel(
   for (const level of THINKING_LEVELS) {
     if (signal.aborted) return undefined;
     const r = await postChat(baseUrl, key, { ...base, reasoning_effort: level }, signal);
+    if (!r.ok && !isParameterRejection(r.status)) return undefined;
     map[level] = r.ok ? level : null;
     if (r.ok) anyLevelOk = true;
     if ((r.rt ?? 0) > 0) anyReasoningSeen = true;
@@ -349,6 +367,7 @@ export async function probeNewModel(
   // 2. `off` semantics: accepted AND zero reasoning tokens → "none"
   if (signal.aborted) return undefined;
   const none = await postChat(baseUrl, key, { ...base, reasoning_effort: "none" }, signal);
+  if (!none.ok && !isParameterRejection(none.status)) return undefined;
   map.off = none.ok && !(none.rt !== undefined && none.rt > 0) ? "none" : null;
   if ((none.rt ?? 0) > 0) anyReasoningSeen = true;
 
@@ -361,7 +380,12 @@ export async function probeNewModel(
   for (const n of CEILING_CANDIDATES) {
     if (signal.aborted) return undefined;
     const r = await postChat(baseUrl, key, { ...base, max_tokens: n }, signal, 30_000);
-    if (!r.ok) break;
+    if (!r.ok) {
+      // A timeout or quota error mid-walk is not a ceiling measurement; bail out
+      // so the caller uses the conservative placeholder instead of a wrong floor.
+      if (!isParameterRejection(r.status)) return undefined;
+      break;
+    }
     highest = n;
   }
   const budget = listing.contextBudget;
@@ -387,6 +411,145 @@ export async function probeNewModel(
 }
 
 // ---------------------------------------------------------------------------
+// Curated re-probe audit — PI_OPENDESIGN_REPROBE
+//
+// Curated values are authoritative and never overwritten at runtime, so a
+// vendor that moves a ceiling leaves this bridge silently stale forever. The
+// audit re-runs the SAME probe used for brand-new ids against every curated id
+// the endpoint still serves, and reports drift. It never mutates the catalog:
+// the maintainer reads the report and decides. Report-only on purpose —
+// promoting a measured value automatically is what this audit exists to make
+// unnecessary.
+//
+// It also reports RETIRED ids: curated entries the endpoint no longer lists.
+// Membership is live-only, so the published catalog already drops them, but
+// models.json may still declare them and Pi composes models.json ABOVE the
+// provider — so only the config can actually remove one.
+// ---------------------------------------------------------------------------
+
+export interface ReprobeFinding {
+  id: string;
+  field: "contextWindow" | "maxTokens" | "thinkingLevelMap" | "reasoning" | "input";
+  curated: unknown;
+  measured: unknown;
+  status: "changed" | "match" | "probe-failed";
+}
+
+export interface ReprobeReport {
+  generatedAt: string;
+  baseUrl: string;
+  audited: number;
+  changed: ReprobeFinding[];
+  retired: string[];
+  uncurated: string[];
+  findings: ReprobeFinding[];
+}
+
+function truthyEnv(envName: string): boolean {
+  const v = (process.env[envName] ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "on" || v === "yes";
+}
+
+/**
+ * Numeric fields are compared with tolerance: curated values are hand-written
+ * in round units (128_000) while the probe reports candidate steps (131_072).
+ * Same window, different notation — flagging it would bury real drift in noise.
+ */
+function numericClose(a: number, b: number): boolean {
+  return Math.abs(a - b) <= 0.05 * Math.max(Math.abs(a), Math.abs(b));
+}
+
+function diffCuratedVsMeasured(curated: LiveModelConfig, measured: LiveModelConfig): ReprobeFinding[] {
+  const out: ReprobeFinding[] = [];
+  const numeric = (field: "contextWindow" | "maxTokens") => {
+    const a = Number(curated[field] ?? 0);
+    const b = Number(measured[field] ?? 0);
+    return numericClose(a, b) ? null : { field, curated: a, measured: b };
+  };
+  const exact = (field: "thinkingLevelMap" | "reasoning" | "input") => {
+    const a = JSON.stringify(curated[field] ?? null);
+    const b = JSON.stringify(measured[field] ?? null);
+    return a === b ? null : { field, curated: curated[field] ?? null, measured: measured[field] ?? null };
+  };
+  for (const field of ["contextWindow", "maxTokens"] as const) {
+    const d = numeric(field);
+    if (d) out.push({ id: curated.id, status: "changed", ...d });
+  }
+  for (const field of ["thinkingLevelMap", "reasoning", "input"] as const) {
+    const d = exact(field);
+    if (d) out.push({ id: curated.id, status: "changed", ...d });
+  }
+  return out;
+}
+
+function fmt(v: unknown): string {
+  return typeof v === "string" ? v : JSON.stringify(v);
+}
+
+function writeReprobeReport(agentDir: string, report: ReprobeReport): void {
+  const path = join(agentDir, "opendesign-reprobe.json");
+  try {
+    writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`);
+  } catch {
+    // A read-only agent dir must not break the refresh.
+  }
+
+  const tag = "[opendesign:reprobe]";
+  console.error(`${tag} ${report.changed.length} drift(s), ${report.retired.length} retired, ${report.audited} audited → ${path}`);
+  for (const f of report.changed) {
+    console.error(`${tag}   ${f.id}.${f.field}: curated=${fmt(f.curated)} measured=${fmt(f.measured)}`);
+  }
+  for (const id of report.retired) {
+    console.error(`${tag}   RETIRED ${id}: curated but absent from ${report.baseUrl}/models — remove it from models.json`);
+  }
+}
+
+/**
+ * Re-probe every curated id the endpoint still serves and diff the result.
+ * Costs ~16 tiny requests per curated model; run it deliberately, not per refresh.
+ */
+export async function runReprobeAudit(options: {
+  agentDir: string;
+  baseUrl: string;
+  key: string;
+  signal: AbortSignal;
+  curated: readonly LiveModelConfig[];
+  live: readonly LiveListing[];
+}): Promise<ReprobeReport | undefined> {
+  const liveById = new Map(options.live.map((l) => [l.id, l]));
+  const curatedIds = new Set(options.curated.map((m) => m.id));
+  const retired = options.curated.filter((m) => !liveById.has(m.id)).map((m) => m.id);
+  const uncurated = options.live.filter((l) => !curatedIds.has(l.id)).map((l) => l.id);
+
+  const findings: ReprobeFinding[] = [];
+  let audited = 0;
+  for (const entry of options.curated) {
+    if (options.signal.aborted) return undefined;
+    const listing = liveById.get(entry.id);
+    if (!listing) continue; // retired: reported separately, never probed
+    audited++;
+    const measured = await probeNewModel(listing, options.baseUrl, options.key, options.signal);
+    if (!measured) {
+      findings.push({ id: entry.id, field: "maxTokens", curated: null, measured: null, status: "probe-failed" });
+      continue;
+    }
+    findings.push(...diffCuratedVsMeasured(entry, measured));
+  }
+
+  const report: ReprobeReport = {
+    generatedAt: new Date().toISOString(),
+    baseUrl: options.baseUrl,
+    audited,
+    changed: findings.filter((f) => f.status === "changed"),
+    retired,
+    uncurated,
+    findings,
+  };
+  writeReprobeReport(options.agentDir, report);
+  return report;
+}
+
+// ---------------------------------------------------------------------------
 // refreshModels — the two-phase hook
 // ---------------------------------------------------------------------------
 
@@ -398,6 +561,8 @@ export interface RefreshModelsOptions {
   baseUrlOverride?: string;
   /** Env var name for the kill switch (default PI_OPENDESIGN_LIVE). */
   killSwitchEnv?: string;
+  /** Env var name for the curated re-probe audit (default PI_OPENDESIGN_REPROBE). */
+  reprobeEnv?: string;
 }
 
 function liveDisabled(envName: string): boolean {
@@ -482,6 +647,14 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
 
     const persisted = await ctx.publish({ persist: { models: out, checkedAt: Date.now() } });
     if (!persisted || ctx.signal.aborted) return undefined;
+
+    // Maintenance-only: re-probe the curated ids we just published and report
+    // drift + retired ids. Runs AFTER publish so the catalog is never delayed,
+    // and never mutates what was published.
+    if (truthyEnv(options.reprobeEnv ?? "PI_OPENDESIGN_REPROBE")) {
+      await runReprobeAudit({ agentDir: options.agentDir, baseUrl, key, signal: ctx.signal, curated, live });
+    }
+
     return out;
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "@lokeraar/pi-opendesign-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenDesign provider bridge for Pi: /login once and the live OpenDesign catalog appears in /model with real structure — context window, max output, reasoning levels, input modalities — auto-synced from the endpoint.",
   "type": "module",
   "main": "./index.ts",

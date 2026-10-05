@@ -155,6 +155,51 @@ exhausted and resets on 2026-10-08. The donor values are applied offline and are
 visible in `/model` regardless, but the ceilings could not be confirmed against
 the live endpoint while the quota is out.
 
+## 🩺 Diagnose
+
+When someone reports that models are missing or that values did not come
+through, the useful question is not their tier but this:
+
+```bash
+npm run diagnose
+```
+
+It prints, read-only:
+
+```
+build
+  package               @lokeraar/pi-opendesign-bridge@0.1.1
+  commit                cc14275
+
+model catalog
+  la extension usa      43 catálogos  …/pi-ai/dist/providers/data
+  encontrado            43 catálogos  …
+
+coverage of this provider
+  provider              opendesign
+  modelos               10 en models.json, 10 con donante
+  el endpoint sirve     14 modelos para esta clave
+  publicados aquí       10
+  faltantes             deepseek-v4-pro, mimo-v2.6-turbo, …
+```
+
+Three things worth reading:
+
+- **`la extension usa`** is what the extension itself resolved. If that line
+  says `NINGUNO`, no donor ran and every value fell back to what was already
+  written. That is indistinguishable from "the donors do not work" unless you
+  print it.
+- **`faltantes`** compares what your key is served against what is published. A
+  non-empty line is the subscription-tier problem: the endpoint has models the
+  extension is not showing, and they have to be added by hand.
+- The catalog is searched by CONTENT — any package that contains
+  `dist/providers/data/*.json` counts, whatever it is named — because insisting
+  on one package name reports "no donor" on every layout but its own.
+
+The two scan results are printed separately on purpose: the first is what the
+extension does, the second is what a broader search could find. When they differ,
+the extension is missing something it could have used.
+
 ## 🔑 Authentication
 
 | Method | Action | Notes |

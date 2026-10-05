@@ -1,13 +1,14 @@
 {
   "name": "@lokeraar/pi-opendesign-bridge",
   "version": "0.1.1",
-  "description": "OpenDesign provider bridge for Pi: /login once and the live OpenDesign catalog appears in /model with real structure — context window, max output, reasoning levels, input modalities — auto-synced from the endpoint.",
+  "description": "OpenDesign provider bridge for Pi: /login once and the live OpenDesign catalog appears in /model with real structure \u2014 context window, max output, reasoning levels, input modalities \u2014 auto-synced from the endpoint.",
   "type": "module",
   "main": "./index.ts",
   "files": [
     "*.ts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/diagnose.mjs"
   ],
   "pi": {
     "extensions": [
@@ -38,5 +39,9 @@
   },
   "bugs": {
     "url": "https://github.com/Lokeraar/pi-opendesign-bridge/issues"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types scripts/test-donors.mjs",
+    "diagnose": "node --experimental-strip-types scripts/diagnose.mjs"
   }
 }

@@ -38,6 +38,12 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  type BundledCatalog,
+  bareName,
+  overlayDonors,
+  readPiCatalogs,
+} from "./donors.ts";
 
 // ---------------------------------------------------------------------------
 // Types (structural mirrors of pi-ai / Pi extension types — see provider-composer.d.ts)
@@ -60,6 +66,13 @@ export interface ValueProvenance {
   maxTokens: ValueOrigin;
   thinkingLevelMap: ValueOrigin;
   input: ValueOrigin;
+  /** Which catalog decided this model's values, and which ones agreed. */
+  donor?: {
+    source: string;
+    matchedId?: string;
+    corroborating: string[];
+    applied: string[];
+  };
 }
 
 export interface LiveModelConfig {
@@ -712,6 +725,48 @@ function sameModels(a: readonly LiveModelConfig[], b: readonly LiveModelConfig[]
  */
 export default async function opendesignLiveHelper(): Promise<void> {}
 
+/**
+ * Tokens held back from an output ceiling so the prompt has room. A ceiling equal
+ * to the window always fails: the endpoint answers "This request needs about N
+ * tokens (messages + tools + max_tokens)". Measured on a 262,144-token window,
+ * 262,144 was rejected and 261,120 passed.
+ */
+const PROMPT_RESERVE_TOKENS = 2_048;
+
+/**
+ * Apply Pi's bundled catalogs to models we already built, and record where each
+ * value came from.
+ *
+ * Runs on both phases so the offline catalog is not a worse version of the live
+ * one. `contextWindow` and `cost` are never touched: they belong to the endpoint.
+ */
+function overlayBundled(
+  models: LiveModelConfig[],
+  bundled: readonly BundledCatalog[],
+): LiveModelConfig[] {
+  if (!bundled.length) return models;
+  return models.map((m) => {
+    const r = overlayDonors(m, bareName(m.id), bundled);
+    const out = { ...r.entry } as LiveModelConfig;
+    // A ceiling the window cannot hold is not a bigger claim, it is an
+    // impossible one. A ceiling inside the limit is used exactly as given.
+    const window = Number(out.contextWindow);
+    if (Number.isFinite(window) && window > 0 && Number(out.maxTokens) > 0) {
+      out.maxTokens = Math.min(out.maxTokens, Math.max(1024, window - PROMPT_RESERVE_TOKENS));
+    }
+    out.provenance = {
+      ...out.provenance,
+      donor: {
+        source: r.source ?? "none",
+        matchedId: r.matchedId,
+        corroborating: r.corroborating,
+        applied: r.applied,
+      },
+    } as LiveModelConfig["provenance"];
+    return out;
+  });
+}
+
 export function makeRefreshModels(options: RefreshModelsOptions) {
   const envName = options.killSwitchEnv ?? "PI_OPENDESIGN_LIVE";
 
@@ -721,6 +776,9 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
     if (liveDisabled(envName)) return undefined;
 
     const cfg = readProviderConfig(options.agentDir);
+    // Pi's bundled catalogs: no credential needed, they are data Pi ships.
+    // Read once per refresh; a missing directory simply yields no donor.
+    const bundled = readPiCatalogs(options.agentDir, { exclude: [PROVIDER_ID] });
     const curatedSource = cfg?.models && cfg.models.length ? cfg.models : STATIC_MODELS;
     const curated = curatedSource.map((m) => normalize(m, cfg?.compat));
     const curatedById = new Map(curated.map((m) => [m.id, m]));
@@ -746,14 +804,15 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
         const storedEntry = liveStored.find((m) => m.id === id);
         return normalize(curatedById.get(id) ?? (storedEntry as LiveModelConfig), cfg?.compat);
       });
-      if (ctx.signal.aborted) return undefined;
-      if (!sameModels(merged, storedModels)) {
+      const mergedDonated = overlayBundled(merged, bundled);
+      if (ctx.signal.aborted) return mergedDonated;
+      if (!sameModels(mergedDonated, storedModels)) {
         const ok = await ctx.publish({
-          persist: { models: merged, checkedAt: ctx.stored?.checkedAt },
+          persist: { models: mergedDonated, checkedAt: ctx.stored?.checkedAt },
         });
         if (!ok || ctx.signal.aborted) return undefined;
       }
-      return merged;
+      return mergedDonated;
     }
 
     // ---- Phase 2: live membership (network + credential) ----
@@ -788,7 +847,12 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
       out.push(probed ?? conservativeModel(listing));
     }
 
-    const persisted = await ctx.publish({ persist: { models: out, checkedAt: Date.now() } });
+    // Los catalogos de Pi se aplican DESPUES de construir, para que ganen
+    // sobre la capa curada y sobre el sondeo: el orden es model card > openrouter
+    // > resto, igual que en el bridge de EnClave.
+    const donated = overlayBundled(out, bundled);
+
+    const persisted = await ctx.publish({ persist: { models: donated, checkedAt: Date.now() } });
     if (!persisted || ctx.signal.aborted) return undefined;
 
     // Maintenance-only: re-probe the curated ids we just published and report
@@ -798,6 +862,6 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
       await runReprobeAudit({ agentDir: options.agentDir, baseUrl, key, signal: ctx.signal, curated, live });
     }
 
-    return out;
+    return donated;
   };
 }

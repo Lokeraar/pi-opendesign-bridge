@@ -78,6 +78,83 @@ When the endpoint publishes an id the curated layer doesn't know, the bridge **m
 > [!NOTE]
 > `PI_OPENDESIGN_LIVE=0` disables the live layer entirely (curated catalog only). The same applies via `PI_OFFLINE` for the network phase.
 
+## 🧬 Value donors — where the numbers come from
+
+Values do not only come from hand-curating. Pi ships a catalog per provider in
+its own package, and this bridge reads them:
+
+```
+<pi-ai>/dist/providers/data/<provider>.json      42 of them
+```
+
+No credential is needed to read them — a key is only needed to *call* an API.
+Matching is on the **bare model name**, so `deepseek-v4-flash` finds
+`deepseek/deepseek-v4-flash`, with the prefix stripped on both sides. The exact
+id that matched is recorded with its prefix, so a match can be audited:
+
+```json
+"provenance": {
+  "donor": {
+    "source": "openrouter",
+    "matchedId": "deepseek/deepseek-v4-flash",
+    "corroborating": ["together", "nvidia"],
+    "applied": ["maxTokens", "thinkingLevelMap"]
+  }
+}
+```
+
+### The order
+
+```
+the vendor's own model card  >  openrouter  >  the other 41 catalogs
+```
+
+**openrouter decides every field it states.** It is the largest model router in
+the world and the catalog is its core business. The other catalogs confirm that a
+model exists and may fill a field nobody above stated; they never override.
+Nothing is averaged.
+
+### An explicit `null` is a claim; an absent key is silence
+
+This is the distinction the whole thing hangs on.
+
+A catalog that writes `"minimal": null` is **claiming** the model does not accept
+that effort level, and the claim wins. `openrouter` does exactly this for the
+DeepSeek family, which is why `deepseek-v4-flash` drops from seven levels to
+three here.
+
+A catalog that leaves the key out has said **nothing**, and saying nothing must
+not erase what we know. `openrouter` lists `kimi-k2.7-code` with a single key and
+`mimo-v2.6-*` with none, so a thinking map is merged **key by key**: a one-key
+map cannot delete a seven-key one. Without that, two models would silently lose
+their reasoning levels to a gap in the catalog.
+
+### What no donor may set
+
+| Field | Owner | Why |
+|---|---|---|
+| `contextWindow` | the endpoint's `metadata.context_limit` | It states what this gateway actually serves. |
+| `cost` | the endpoint | A catalog's price is for a different reseller. |
+| `compat` | never inherited | `thinkingFormat` and friends describe how one reseller frames reasoning. Amr-link was verified by sending `reasoning_effort` and watching what came back. |
+
+### The ceiling clamp
+
+A ceiling the window cannot hold is an impossible claim, not a big one, so it is
+clamped to the window minus a 2,048-token prompt reserve. A ceiling inside the
+limit is used exactly as given.
+
+> **Verify after an update.** A donor's ceiling is a catalog's statement about
+> its own infrastructure. When OpenDesign's quota is available again, spot-check
+> that the published ceilings are accepted: `maxTokens` values that are too high
+> produce `400` on every request, which is loud but easy to misread as an outage.
+
+### Known endpoint state
+
+As of 2026-10-03 every `/v1/chat` call on amr-link answers `402` — the quota is
+exhausted and resets on 2026-10-08. The donor values are applied offline and are
+visible in `/model` regardless, but the ceilings could not be confirmed against
+the live endpoint while the quota is out.
+
 ## 🔑 Authentication
 
 | Method | Action | Notes |

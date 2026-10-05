@@ -1,5 +1,5 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version: 0.1.1](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
+[![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
 
 # @lokeraar/pi-opendesign-bridge
 
@@ -20,6 +20,59 @@ Connecting Pi to OpenDesign takes more than a base URL:
 - `/providers sync` (provider-manager) can only fill unknown ids with **vanilla defaults** (128k/16k, `medium` only) and never refreshes existing ones — the opposite of "real values".
 
 This bridge solves both sides at once: a **curated structure layer** (verified values that never get clobbered) plus a **live `/models` fetch layer** (membership synced automatically, brand-new ids *measured* with tiny probe requests). And it ships with **zero premium/tier/quota logic** — completely free: the endpoint's answer for your key is the catalog, full stop.
+
+## 📋 Releases
+
+### 0.2.0 — the values come from Pi's own catalog
+
+The biggest change since the first release. Values were hand-curated with no
+other source, so a model nobody had thought about arrived with placeholder
+numbers. Pi ships **42 provider catalogs** inside its own package and this
+bridge now reads them:
+
+```
+<pi-ai>/dist/providers/data/<provider>.json
+```
+
+No credential is needed — a key is only required to *call* an API, not to read
+what Pi already installed. Matching is on the bare model name, and the exact id
+that matched is recorded with its prefix:
+
+```json
+"provenance": { "donor": {
+  "source": "openrouter",
+  "matchedId": "deepseek/deepseek-v4-flash",
+  "corroborating": ["together", "nvidia"],
+  "applied": ["maxTokens", "thinkingLevelMap"]
+}}
+```
+
+Precedence: **the vendor's model card > openrouter > the other 41**. openrouter
+decides every field it states; the rest confirm and may fill a field nobody
+above stated. Nothing is averaged.
+
+An explicit `null` in a catalog is a **claim** and is applied. An absent key is
+**silence** and does not erase what is known — which is why a thinking map is
+merged key by key. openrouter lists `kimi-k2.7-code` with one key and the
+`mimo-v2.6-*` models with none; a wholesale replace would have deleted eight
+working reasoning levels.
+
+Also in this release:
+
+- **A retirement ledger** with two reasons a model can be dropped: absent from a
+  successful fetch, or listed with no healthy route for your key.
+- **A tunnel-aware probe.** This router proxies other providers and answers
+  `502` with the upstream status in the body, so `max_tokens=393216` arrives as
+  `502 "Inference provider returned HTTP 400"`. Judging by status alone threw
+  that measurement away and lost the real ceiling on 12 of 14 models.
+- **A ceiling clamp** to the window minus a prompt reserve. A ceiling the window
+  cannot hold is not a bigger claim, it is an impossible one.
+- **`npm run diagnose`**, which prints what this installation actually resolved
+  — see below.
+
+### 0.1.0 — first release
+
+The live `/models` fetch, the curated layer, and auto-probe for new ids.
 
 ## ⚡ Quick Start
 

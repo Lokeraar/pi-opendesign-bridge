@@ -307,9 +307,18 @@ Three things worth reading:
 - **`faltantes`** compares what your key is served against what is published. A
   non-empty line is the subscription-tier problem: the endpoint has models the
   extension is not showing, and they have to be added by hand.
-- The catalog is searched by CONTENT — any package that contains
-  `dist/providers/data/*.json` counts, whatever it is named — because insisting
-  on one package name reports "no donor" on every layout but its own.
+- The catalog is searched by **content**: any package containing
+  `dist/providers/data/*.json` counts, whatever it is named. That is not a
+  preference. Pi installs the same catalogs under different package names
+  depending on the version and the launcher, so a lookup keyed on the name
+  reports "no donor" on every layout but its own.
+- The store is searched under the running agent directory **and its siblings**,
+  so a wrapper that relocates it resolves too. Reporters on Pi 1.0.1 through
+  `gentle-shell` — which installs into `~/.gentle-shell/agent` — were seeing
+  neither their tier's models nor any inherited values, because the lookup
+  returned nothing and every model fell back to its defaults. It also descends
+  into store entries, which sit directly under the store root rather than under a
+  `node_modules`, so a walk that looks only there sees an empty store.
 
 The two scan results are printed separately on purpose: the first is what the
 extension does, the second is what a broader search could find. When they differ,

@@ -60,8 +60,13 @@ console.log("\n\x1b[1mmodel catalog\x1b[0m");
  */
 function findCatalogs() {
   const prefix = dirname(dirname(process.execPath));
+  const home = dirname(agentDir);
   const roots = [
     join(agentDir, "npm", "node_modules", ".pnpm"),
+    // A shell wrapper such as gentle-shell relocates the agent directory, so
+    // its siblings are checked too.
+    join(home, ".gentle-shell", "agent", "npm", "node_modules", ".pnpm"),
+    join(home, ".pi", "agent", "npm", "node_modules", ".pnpm"),
     join(prefix, "lib", "node_modules"),
     "/usr/local/lib/node_modules",
     "/usr/lib/node_modules",

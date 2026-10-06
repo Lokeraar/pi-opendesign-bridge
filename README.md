@@ -11,6 +11,25 @@ OpenDesign provider bridge for [pi](https://github.com/earendil-works/pi): regis
 
 > 📦 Page: [pi.dev/packages/@lokeraar/pi-opendesign-bridge](https://pi.dev/packages/@lokeraar/pi-opendesign-bridge)
 
+## 🔗 Where to find me
+
+| | |
+|---|---|
+| 📦 **npm** | [`@lokeraar/pi-opendesign-bridge`](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge) |
+| 🌐 **Pi catalog** | [pi.dev/packages/@lokeraar/pi-opendesign-bridge](https://pi.dev/packages/@lokeraar/pi-opendesign-bridge) |
+| ⭐ **Source** | [github.com/Lokeraar/pi-opendesign-bridge](https://github.com/Lokeraar/pi-opendesign-bridge) |
+
+Install it in Pi:
+
+```bash
+pi install npm:@lokeraar/pi-opendesign-bridge
+```
+
+> 💛 If this bridge ever saved you from guessing a model's limits, a ⭐ on the
+> repo goes a long way. It is the only thing that helps somebody else find it,
+> and it tells me which of these two bridges is worth polishing next. Every star
+> is read by a human, and so is every bug report.
+
 ## Why this package exists
 
 Connecting Pi to OpenDesign takes more than a base URL:

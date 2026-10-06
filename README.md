@@ -26,9 +26,8 @@ pi install npm:@lokeraar/pi-opendesign-bridge
 ```
 
 > 💛 If this bridge ever saved you from guessing a model's limits, a ⭐ on the
-> repo goes a long way. It is the only thing that helps somebody else find it,
-> and it tells me which of these two bridges is worth polishing next. Every star
-> is read by a human, and so is every bug report.
+> repo goes a long way — it is the only thing that helps somebody else find it.
+> Every star is read by a human, and so is every bug report.
 
 ## Why this package exists
 

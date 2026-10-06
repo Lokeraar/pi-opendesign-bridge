@@ -208,6 +208,45 @@ exhausted and resets on 2026-10-08. The donor values are applied offline and are
 visible in `/model` regardless, but the ceilings could not be confirmed against
 the live endpoint while the quota is out.
 
+## 🐞 Fixes
+
+Named here because each one had a symptom that looked like something else.
+
+**A `402` is not a measurement.** The probe used to treat every HTTP status as
+the model's opinion, so an exhausted quota — `402`, `401`, `403`, `429`, any
+`5xx`, any timeout — was read as "this model has no reasoning levels and a small
+ceiling", and then written down. Before the fix the audit reported 25 false
+positives; after, zero. Only `400` and `422` are now treated as a parameter
+rejection, because only those mean the request shape was refused.
+
+**A `502` can be a `400`.** This router proxies other providers, so when the
+inference provider refuses a parameter the answer arrives as
+`502 "Inference provider returned HTTP 400"`. Judging by status alone threw that
+measurement away, which cost the real ceiling on 12 of 14 models. The upstream
+status in the body is now what counts.
+
+**A ceiling that the window cannot hold is impossible, not large.** OpenRouter
+listed `inkling` at 471,859 against a 262,144 window here, and the endpoint
+refused it with *"This request needs about N tokens (messages + tools +
+max_tokens)"*. Clamped to the window minus a prompt reserve — and it cannot equal
+the window either: 262,144 was rejected while 261,120 passed.
+
+**A catalog that omits a key has not claimed anything.** An explicit `null` is a
+claim and is applied; an absent key is silence and does not erase a known value.
+Thinking maps are therefore merged key by key. Without that rule
+`kimi-k2.7-code` and both `mimo-v2.6-*` lost working reasoning levels to a gap in
+the catalog.
+
+**`maxTokens` must never be `null`.** Pi's model list calls `.toString()` on it
+and crashes with *"Cannot read properties of undefined"*, taking the whole list
+with it.
+
+**A scoped package publishes private by default.** `npm publish` failed with
+`E402 "You must sign up for private packages"`, which reads like a billing
+problem and is not one: restricted packages need a paid plan. Declared in the
+manifest as `"publishConfig": { "access": "public" }`, so a bare `npm publish`
+does the right thing.
+
 ## 🩺 Diagnose
 
 When someone reports that models are missing or that values did not come

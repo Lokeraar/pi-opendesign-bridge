@@ -43,7 +43,7 @@ import {
   bareName,
   overlayDonors,
   readPiCatalogs,
-} from "./donors.ts";
+} from "./donors-opendesign.ts";
 
 // ---------------------------------------------------------------------------
 // Types (structural mirrors of pi-ai / Pi extension types — see provider-composer.d.ts)

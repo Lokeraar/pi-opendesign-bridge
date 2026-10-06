@@ -20,7 +20,7 @@ const {
   readPiCatalogs,
   findBundledCatalogDir,
   readCuratedIndex,
-} = await import(join(ROOT, "donors.ts"));
+} = await import(join(ROOT, "donors-opendesign.ts"));
 
 let passed = 0;
 const failed = [];
@@ -138,7 +138,7 @@ console.log("\na relocated agent dir and a differently-named store folder");
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join: J } = await import("node:path");
-  const { storeCatalogs, agentRoots } = await import(join(ROOT, "donors.ts"));
+  const { storeCatalogs, agentRoots } = await import(join(ROOT, "donors-opendesign.ts"));
 
   const home = mkdtempSync(J(tmpdir(), "enclave-layout-"));
   const store = J(

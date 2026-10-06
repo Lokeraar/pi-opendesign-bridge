@@ -171,7 +171,7 @@ const { found, searched } = findCatalogs();
  */
 let used = null;
 try {
-  const { findBundledCatalogDir, findBundledCatalogs } = await import(join(ROOT, "donors.ts"));
+  const { findBundledCatalogDir, findBundledCatalogs } = await import(join(ROOT, "donors-opendesign.ts"));
   const dirs = findBundledCatalogs(agentDir);
   used = dirs[0]?.dir ?? null;
   if (used) {
@@ -221,7 +221,7 @@ if (found.length > 3) line(dim("…"), dim(`${found.length - 3} ubicaciones más
 // ---------------------------------------------------------------- coverage
 console.log("\n\x1b[1mcoverage of this provider\x1b[0m");
 try {
-  const { readPiCatalogs, bareName } = await import(join(ROOT, "donors.ts"));
+  const { readPiCatalogs, bareName } = await import(join(ROOT, "donors-opendesign.ts"));
   const cfg = JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8"));
   const provider = Object.keys(cfg.providers ?? {}).includes("opendesign")
     ? "opendesign"

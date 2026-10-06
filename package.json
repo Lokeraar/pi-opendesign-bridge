@@ -8,7 +8,8 @@
     "*.ts",
     "README.md",
     "LICENSE",
-    "scripts/diagnose.mjs"
+    "scripts/diagnose.mjs",
+    "donors-opendesign.ts"
   ],
   "pi": {
     "extensions": [

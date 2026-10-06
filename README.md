@@ -1,5 +1,5 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
+[![Version: 0.2.1](https://img.shields.io/badge/version-0.2.1-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
 
 # @lokeraar/pi-opendesign-bridge
 
@@ -40,6 +40,11 @@ Connecting Pi to OpenDesign takes more than a base URL:
 This bridge solves both sides at once: a **curated structure layer** (verified values that never get clobbered) plus a **live `/models` fetch layer** (membership synced automatically, brand-new ids *measured* with tiny probe requests). And it ships with **zero premium/tier/quota logic** — completely free: the endpoint's answer for your key is the catalog, full stop.
 
 ## 📋 Releases
+
+### 0.2.1 — documentation
+
+Links in both directions, so the npm page and the source repo point at each
+other, and a note asking for a star. No behaviour change.
 
 ### 0.2.0 — the values come from Pi's own catalog
 

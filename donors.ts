@@ -58,7 +58,7 @@
  * catalog entry sharing a bare name with a pseudo-model can never overwrite it.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -246,23 +246,136 @@ export function findBundledCatalogs(agentDir: string): CatalogLocation[] {
  * preference order can be tested without the Pi install shadowing it.
  */
 export function storeCatalogs(agentDir: string): string[] {
-  const store = join(agentDir, "npm", "node_modules", ".pnpm");
-  let entries: string[] = [];
-  try {
-    entries = readdirSync(store).filter((e) => e.startsWith("@earendil-works+pi-ai@"));
-  } catch {
-    return [];
-  }
+  const roots = agentRoots(agentDir);
   const out: string[] = [];
-  entries
-    .map((e) => ({ entry: e, version: e.slice("@earendil-works+pi-ai@".length).split("_")[0] }))
-    .filter((c) => !c.version.includes("+"))
-    .sort((a, b) => compareVersions(b.version, a.version))
-    .forEach((c) => {
-      const dir = catalogAt(join(store, c.entry, "node_modules", "@earendil-works", "pi-ai", "package.json"));
-      if (dir) out.push(dir);
-    });
-  return out;
+  const seen = new Set<string>();
+
+  const visit = (pkgDir: string, depth: number) => {
+    if (depth > 2) return;
+    const dir = join(pkgDir, "dist", "providers", "data");
+    let count = 0;
+    try {
+      count = readdirSync(dir).filter((f) => f.endsWith(".json")).length;
+    } catch {
+      count = 0;
+    }
+    if (count) {
+      // Dedupe by real path: the pnpm store links the same copy under many
+      // entry folders, and counting it ten times hides which one is live.
+      let key = dir;
+      try {
+        key = realpathSync(dir);
+      } catch {
+        /* not a link */
+      }
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(dir);
+      }
+    }
+    // Descend two ways, because the layout depends on where Pi was installed.
+    //
+    //   node_modules/<pkg>/node_modules/@scope/<pkg>     a plain install
+    //   <store>/@scope+name@version_hash/node_modules/…    a pnpm store
+    //
+    // In the pnpm case the store entries sit DIRECTLY under the root, not under
+    // a node_modules, so a walk that only looks at `node_modules` finds nothing.
+    // That is the whole bug: a store whose folder is named after a different
+    // package than the one holding the catalogs was skipped entirely.
+    const nm = join(pkgDir, "node_modules");
+    let scopes: string[] = [];
+    try {
+      scopes = readdirSync(nm);
+    } catch {
+      scopes = [];
+    }
+    for (const scope of scopes) {
+      if (scope.startsWith("@")) {
+        let pkgs: string[] = [];
+        try {
+          pkgs = readdirSync(join(nm, scope));
+        } catch {
+          continue;
+        }
+        for (const pkg of pkgs) visit(join(nm, scope, pkg), depth + 1);
+      } else {
+        visit(join(nm, scope), depth + 1);
+      }
+    }
+
+    // Store entries live directly under the store root.
+    if (depth === 0) {
+      let entries: string[] = [];
+      try {
+        entries = readdirSync(pkgDir);
+      } catch {
+        entries = [];
+      }
+      for (const entry of entries) {
+        if (!entry.includes("+") && !entry.includes("@")) continue;
+        const full = join(pkgDir, entry);
+        try {
+          if (!statSync(full).isDirectory()) continue;
+        } catch {
+          continue;
+        }
+        visit(full, depth + 1);
+      }
+    }
+  };
+
+  for (const root of roots) {
+    let ok = false;
+    try {
+      ok = statSync(root).isDirectory();
+    } catch {
+      ok = false;
+    }
+    if (ok) visit(root, 0);
+  }
+
+  // Highest version first, so if two copies survive, the newer one is used.
+  return out.sort((a, b) => versionAt(b) - versionAt(a));
+}
+
+/** Best-effort major.minor.patch out of a `.../node_modules/<pkg>` path. */
+function versionAt(dir: string): number {
+  // A store folder is `name@version_hash`, and the name is itself often
+  // `@scope+pkg`. So the version is only what follows the LAST `@` — matching
+  // the `+` of a scope instead would mark every folder a prerelease.
+  // The path contains `/node_modules/` twice — once in `npm/node_modules/.pnpm`
+  // and once inside the store entry — so splitting on the first occurrence
+  // yields "npm" and no version at all. Take the store entry explicitly.
+  const parts = dir.split("/");
+  const pnpmAt = parts.lastIndexOf(".pnpm");
+  const dataAt = parts.lastIndexOf("data");
+  const folder = (pnpmAt !== -1 && parts[pnpmAt + 1]) || (dataAt > 1 && parts[dataAt - 1]) || "";
+  const lastAt = folder.lastIndexOf("@");
+  if (lastAt === -1) return -1;
+  const version = folder.slice(lastAt + 1).split("_")[0];
+  // A `+build` version is a prerelease, never the copy a released Pi runs.
+  if (version.includes("+")) return -1;
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!m) return -1;
+  return Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3]);
+}
+
+/**
+ * Every directory that could hold a pnpm-style store.
+ *
+ * `agentDir` is normally correct — Pi's own `getAgentDir()` follows
+ * PI_CODING_AGENT_DIR, so a launcher that relocates the agent directory is
+ * handled for us. The siblings are belt and braces for the case where the
+ * extension runs under one agent dir while the catalogs were installed under
+ * another, which is what a shell wrapper like gentle-shell produces.
+ */
+export function agentRoots(agentDir: string): string[] {
+  const home = dirname(agentDir);
+  return [...new Set([
+    join(agentDir, "npm", "node_modules", ".pnpm"),
+    join(home, ".gentle-shell", "agent", "npm", "node_modules", ".pnpm"),
+    join(home, ".pi", "agent", "npm", "node_modules", ".pnpm"),
+  ])];
 }
 
 /** Pi's own version, for the report only. Note this is NOT pi-ai's version:

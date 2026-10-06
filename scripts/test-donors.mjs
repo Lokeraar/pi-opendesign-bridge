@@ -133,6 +133,35 @@ console.log("\nthe real catalogs, no credential needed");
   }
 }
 
+console.log("\na relocated agent dir and a differently-named store folder");
+{
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: J } = await import("node:path");
+  const { storeCatalogs, agentRoots } = await import(join(ROOT, "donors.ts"));
+
+  const home = mkdtempSync(J(tmpdir(), "enclave-layout-"));
+  const store = J(
+    home,
+    ".gentle-shell/agent/npm/node_modules/.pnpm/@earendil-works+pi-agent-core@1.0.1_hash",
+  );
+  const leaf = J(store, "node_modules/@earendil-works/pi-ai/dist/providers/data");
+  mkdirSync(leaf, { recursive: true });
+  writeFileSync(
+    J(leaf, "openrouter.json"),
+    JSON.stringify({ "openai-completions": { "z-ai/glm-5.3": { id: "z-ai/glm-5.3", maxTokens: 262144 } } }),
+  );
+  writeFileSync(J(leaf, "together.json"), JSON.stringify({ "openai-completions": { "x/y": { id: "x/y" } } }));
+  const agentDir = J(home, ".gentle-shell/agent");
+
+  const dirs = storeCatalogs(agentDir);
+  check("a relocated agent dir is searched", agentRoots(agentDir).some((r) => r.includes("gentle-shell")), agentRoots(agentDir).join(","));
+  check("a store folder named after ANOTHER package is still found", dirs.length === 1, String(dirs.length));
+  check("and it is the right directory", dirs[0]?.endsWith(J("pi-ai", "dist", "providers", "data")), String(dirs[0]));
+  check("with both catalogs", dirs.length === 1 && readdirSync(dirs[0]).filter((f) => f.endsWith(".json")).length === 2);
+  rmSync(home, { recursive: true, force: true });
+}
+
 console.log(`\n${passed} passed, ${failed.length} failed`);
 if (failed.length) {
   for (const f of failed) console.log(`  - ${f}`);

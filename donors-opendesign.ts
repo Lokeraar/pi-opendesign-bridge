@@ -264,7 +264,14 @@ export function findBundledCatalogs(agentDir: string): CatalogLocation[] {
  * a prerelease is never the one a released Pi runs. Exported separately so the
  * preference order can be tested without the Pi install shadowing it.
  */
+const storeCache = new Map<string, string[]>();
+
+/** Cached because Pi refreshes on every /model search, and the tree under
+ *  node_modules holds several hundred packages. The catalogs do not change
+ *  while the process is alive. */
 export function storeCatalogs(agentDir: string): string[] {
+  const cached = storeCache.get(agentDir);
+  if (cached) return cached;
   const roots = agentRoots(agentDir);
   const out: string[] = [];
   const seen = new Set<string>();
@@ -384,7 +391,9 @@ export function storeCatalogs(agentDir: string): string[] {
   }
 
   // Highest version first, so if two copies survive, the newer one is used.
-  return out.sort((a, b) => versionAt(b) - versionAt(a));
+  const sorted = out.sort((a, b) => versionAt(b) - versionAt(a));
+  storeCache.set(agentDir, sorted);
+  return sorted;
 }
 
 /** Best-effort major.minor.patch out of a `.../node_modules/<pkg>` path. */
@@ -422,16 +431,20 @@ export function agentRoots(agentDir: string): string[] {
   // The real home, NOT dirname(agentDir): with agentDir = ~/.pi/agent that
   // yields ~/.pi, and joining ".pi/agent" onto it gives the nonsense ~/.pi/.pi/agent.
   const home = homedir();
-  return [
+  // Deduplicated: with agentDir = ~/.pi/agent the first and third entries are
+  // the same path, and scanning it twice doubled the cost for nothing.
+  return [...new Set([
     // The pnpm stores, where the folder is renamed per version and hash.
     join(agentDir, "npm", "node_modules", ".pnpm"),
     join(home, ".gentle-shell", "agent", "npm", "node_modules", ".pnpm"),
     join(home, ".pi", "agent", "npm", "node_modules", ".pnpm"),
     // A flat install, straight under the agent directory, not renamed and with
-    // no build step. This is the shape teams installing Pi directly get.
+    // no build step. This is the shape teams installing Pi directly get. It is
+    // a much larger tree than a store, so it is only walked if no store was
+    // found.
     join(agentDir, "npm", "node_modules"),
     join(home, ".gentle-shell", "agent", "npm", "node_modules"),
-  ];
+  ])];
 }
 
 /** Pi's own version, for the report only. Note this is NOT pi-ai's version:

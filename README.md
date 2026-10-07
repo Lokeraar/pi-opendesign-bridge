@@ -41,6 +41,61 @@ This bridge solves both sides at once: a **curated structure layer** (verified v
 
 ## 📋 Releases
 
+### 0.2.5 — a broken catalog tree no longer takes the provider down
+
+Pi refreshes every provider in one batch. An exception thrown while looking for
+catalogs therefore aborted the batch for **all** of them, and Pi reported
+`could not refresh N model catalogs` for providers that were working fine —
+right after a successful `/login`:
+
+```
+Saved API key for EnClave, but local model state could not be synchronized
+```
+
+The credential was saved; the refresh that followed it failed. Every donor lookup
+is now wrapped, and a catalog that cannot be read degrades to "no donors" instead
+of throwing. A donor layer is an enhancement and is not allowed to take the
+provider down with it.
+
+The version comparison also split the path on `/`, which is wrong on Windows where
+the separator is a backslash, so the pick was arbitrary there.
+
+### 0.2.4 — catalogs from a flat install too
+
+The catalogs can sit at three places depending on how Pi was installed, and only
+the two with a `dist` were being read:
+
+```
+<global>/…/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/data
+<agent>/npm/node_modules/.pnpm/@earendil-works+pi-ai@…/node_modules/…/pi-ai/dist/providers/data
+<agent>/npm/node_modules/@earendil-works/pi-ai/providers/data
+```
+
+The third is what a flat install gives you: no `.pnpm`, and no `dist` either. The
+lookup found nothing on those machines, so every model fell back to its defaults
+— no context window, no ceiling, no reasoning levels.
+
+Two bugs fixed alongside it. The sibling roots were built from
+`dirname(agentDir)` as if that were the home directory, which for
+`agentDir = ~/.pi/agent` produces the nonsense `~/.pi/.pi/agent`. And the root
+walk tested an entry for `@` before testing it for `+`, so a pnpm entry like
+`@earendil-works+pi-ai@0.85.1_hash` — which is both — was treated as an empty
+scope and skipped, losing the very copy being looked for.
+
+### 0.2.3 — find the catalog by content, and stop the two bridges colliding
+
+Discovery was keyed on the package name, so a store named after a different
+package returned nothing. It is now by content: any package containing
+`dist/providers/data/*.json` counts, whatever it is named.
+
+Both bridges also installed a file called `donors.ts` into the same extensions
+directory, so whichever was copied last overwrote the other. Renamed per bridge,
+so installing one can never displace the other.
+
+### 0.2.2 — find the catalog by content
+
+First pass at the same fix, before the flat install shape was known.
+
 ### 0.2.1 — documentation
 
 Links in both directions, so the npm page and the source repo point at each

@@ -272,6 +272,17 @@ const storeCache = new Map<string, string[]>();
 export function storeCatalogs(agentDir: string): string[] {
   const cached = storeCache.get(agentDir);
   if (cached) return cached;
+  try {
+    return storeCatalogsUnsafe(agentDir);
+  } catch {
+    // Unreadable tree, a broken junction, a path that is not a directory: the
+    // honest answer is "no catalogs found", not an exception.
+    storeCache.set(agentDir, []);
+    return [];
+  }
+}
+
+function storeCatalogsUnsafe(agentDir: string): string[] {
   const roots = agentRoots(agentDir);
   const out: string[] = [];
   const seen = new Set<string>();
@@ -404,7 +415,8 @@ function versionAt(dir: string): number {
   // The path contains `/node_modules/` twice — once in `npm/node_modules/.pnpm`
   // and once inside the store entry — so splitting on the first occurrence
   // yields "npm" and no version at all. Take the store entry explicitly.
-  const parts = dir.split("/");
+  // Windows uses `\`, so normalise before splitting.
+  const parts = dir.replace(/\\/g, "/").split("/");
   const pnpmAt = parts.lastIndexOf(".pnpm");
   const dataAt = parts.lastIndexOf("data");
   const folder = (pnpmAt !== -1 && parts[pnpmAt + 1]) || (dataAt > 1 && parts[dataAt - 1]) || "";
@@ -547,6 +559,18 @@ export function readCuratedIndex(agentDir: string, provider = "opendesign"): Map
  * are corroboration.
  */
 export function readPiCatalogs(agentDir: string, options: { exclude?: readonly string[] } = {}): BundledCatalog[] {
+  // Never throws. Pi refreshes every provider in one batch, so an exception
+  // here aborts the whole batch and leaves every provider on cached models —
+  // including the ones that were fine. A donor layer is an enhancement; it is
+  // not allowed to take the provider down with it.
+  try {
+    return readPiCatalogsUnsafe(agentDir, options);
+  } catch {
+    return [];
+  }
+}
+
+function readPiCatalogsUnsafe(agentDir: string, options: { exclude?: readonly string[] } = {}): BundledCatalog[] {
   const dir = findBundledCatalogDir(agentDir);
   if (!dir) return [];
   const skip = new Set(options.exclude ?? []);

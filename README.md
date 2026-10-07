@@ -1,5 +1,5 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version: 0.2.4](https://img.shields.io/badge/version-0.2.4-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
+[![Version: 0.2.5](https://img.shields.io/badge/version-0.2.5-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
 
 # @lokeraar/pi-opendesign-bridge
 

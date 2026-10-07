@@ -745,6 +745,18 @@ function overlayBundled(
   bundled: readonly BundledCatalog[],
 ): LiveModelConfig[] {
   if (!bundled.length) return models;
+  try {
+    return overlayBundledUnsafe(models, bundled);
+  } catch {
+    // A donor that cannot be applied is a worse catalog, never a dead provider.
+    return models;
+  }
+}
+
+function overlayBundledUnsafe(
+  models: LiveModelConfig[],
+  bundled: readonly BundledCatalog[],
+): LiveModelConfig[] {
   return models.map((m) => {
     const r = overlayDonors(m, bareName(m.id), bundled);
     const out = { ...r.entry } as LiveModelConfig;
@@ -778,7 +790,16 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
     const cfg = readProviderConfig(options.agentDir);
     // Pi's bundled catalogs: no credential needed, they are data Pi ships.
     // Read once per refresh; a missing directory simply yields no donor.
-    const bundled = readPiCatalogs(options.agentDir, { exclude: [PROVIDER_ID] });
+    // Wrapped because Pi refreshes every provider in one batch: if this throws,
+    // Pi reports "could not refresh N model catalogs" for all of them and falls
+    // back to cached models — even the providers that were working. A missing
+    // catalog must degrade to "no donors", not to a failed login.
+    let bundled: BundledCatalog[] = [];
+    try {
+      bundled = readPiCatalogs(options.agentDir, { exclude: [PROVIDER_ID] });
+    } catch {
+      bundled = [];
+    }
     const curatedSource = cfg?.models && cfg.models.length ? cfg.models : STATIC_MODELS;
     const curated = curatedSource.map((m) => normalize(m, cfg?.compat));
     const curatedById = new Map(curated.map((m) => [m.id, m]));

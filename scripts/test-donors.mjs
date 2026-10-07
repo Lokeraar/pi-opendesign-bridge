@@ -175,6 +175,52 @@ console.log("\na relocated agent dir and a differently-named store folder");
   rmSync(home, { recursive: true, force: true });
 }
 
+console.log("\na broken catalog tree must never take the provider down");
+{
+  const { readFileSync: rf3 } = await import("node:fs");
+  const { makeRefreshModels } = await import(join(ROOT, "opendesign-live.ts"));
+  const agentDir = process.env.HOME + "/" + ".pi/agent";
+  const cfg = rf3(join(agentDir, "models.json"), "utf8");
+  const key = JSON.parse(cfg).providers?.opendesign?.apiKey;
+  if (!key) {
+    console.log("  --   sin credencial de opendesign, se omite");
+  } else {
+    // An ES module namespace is read-only, so the builtin module object itself
+    // has to be patched — which is what happens on Windows when a junction or a
+    // symlink loop makes readdirSync throw.
+    const fsMod = (await import("node:fs")).default;
+    const real = fsMod.readdirSync;
+    fsMod.readdirSync = function (p, ...rest) {
+      // A broken junction or an ELOOP on Windows throws from readdir.
+      if (typeof p === "string" && p.includes("providers")) {
+        throw Object.assign(new Error("ELOOP: too many symbolic links"), { code: "ELOOP" });
+      }
+      return real.call(fsMod, p, ...rest);
+    };
+    let threw = null;
+    let published = 0;
+    try {
+      const out = await makeRefreshModels({ agentDir })({
+        credential: { type: "api_key", key },
+        stored: undefined,
+        allowNetwork: true,
+        signal: AbortSignal.any([AbortSignal.timeout(20000)]),
+        async publish() {
+          published++;
+          return true;
+        },
+      });
+      threw = null;
+      check("the provider still publishes with a broken tree", Array.isArray(out) && out.length > 0, String(out && out.length));
+    } catch (e) {
+      threw = e;
+      check("the provider still publishes with a broken tree", false, e.message);
+    }
+    check("and the refresh did not throw", threw === null, threw && threw.message);
+    fsMod.readdirSync = real;
+  }
+}
+
 console.log(`\n${passed} passed, ${failed.length} failed`);
 if (failed.length) {
   for (const f of failed) console.log(`  - ${f}`);

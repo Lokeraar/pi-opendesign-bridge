@@ -59,6 +59,7 @@
  */
 
 import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -153,12 +154,30 @@ export interface CatalogLocation {
   origin: "pi install" | "global install";
 }
 
-function catalogAt(piAiPackage: string): string | undefined {
-  const candidate = join(dirname(piAiPackage), "dist", "providers", "data");
-  try {
-    if (statSync(candidate).isDirectory()) return candidate;
-  } catch {
-    return undefined;
+/**
+ * The catalogs sit in one of two shapes depending on how Pi was installed:
+ *
+ *   <pkg>/dist/providers/data     a compiled install: pnpm store or global
+ *   <pkg>/providers/data          a flat install, straight under the agent
+ *                                  directory, with no build step and no `dist`
+ *
+ * Both are checked. Insisting on one shape reports "no donor" on every layout
+ * but its own, which is indistinguishable from the donors being broken.
+ */
+const CATALOG_SHAPES = [
+  ["dist", "providers", "data"],
+  ["providers", "data"],
+] as const;
+
+/** Takes a package DIRECTORY, not a package.json path. */
+function catalogAt(pkgDir: string): string | undefined {
+  for (const shape of CATALOG_SHAPES) {
+    const candidate = join(pkgDir, ...shape);
+    try {
+      if (statSync(candidate).isDirectory()) return candidate;
+    } catch {
+      // try the next shape
+    }
   }
   return undefined;
 }
@@ -231,7 +250,7 @@ export function findBundledCatalogs(agentDir: string): CatalogLocation[] {
   // ERR_PACKAGE_PATH_NOT_EXPORTED. The directory is right there next to Pi, so
   // looking for it directly is both simpler and immune to that.
   for (const piPkg of piPackageCandidates()) {
-    push(catalogAt(join(piPkg, "node_modules", "@earendil-works", "pi-ai", "package.json")), "la que usa Pi");
+    push(catalogAt(join(piPkg, "node_modules", "@earendil-works", "pi-ai")), "la que usa Pi");
   }
 
   for (const dir of storeCatalogs(agentDir)) push(dir, "pi install");
@@ -252,14 +271,14 @@ export function storeCatalogs(agentDir: string): string[] {
 
   const visit = (pkgDir: string, depth: number) => {
     if (depth > 2) return;
-    const dir = join(pkgDir, "dist", "providers", "data");
+    const dir = catalogAt(pkgDir);
     let count = 0;
     try {
-      count = readdirSync(dir).filter((f) => f.endsWith(".json")).length;
+      count = dir ? readdirSync(dir).filter((f) => f.endsWith(".json")).length : 0;
     } catch {
       count = 0;
     }
-    if (count) {
+    if (dir && count) {
       // Dedupe by real path: the pnpm store links the same copy under many
       // entry folders, and counting it ten times hides which one is live.
       let key = dir;
@@ -303,7 +322,13 @@ export function storeCatalogs(agentDir: string): string[] {
       }
     }
 
-    // Store entries live directly under the store root.
+    // Directly under a root there are two kinds of child worth visiting:
+    // pnpm store entries (`@scope+name@version_hash`) and, in a flat install,
+    // the packages themselves hanging off a scope (`@earendil-works/pi-ai`).
+    // The second has no `+` and no `@` in its own name, so a filter that only
+    // accepted store entries skipped every flat install — which is why a layout
+    // with the catalogs under `node_modules/@earendil-works/pi-ai/providers`
+    // came back empty.
     if (depth === 0) {
       let entries: string[] = [];
       try {
@@ -312,7 +337,31 @@ export function storeCatalogs(agentDir: string): string[] {
         entries = [];
       }
       for (const entry of entries) {
-        if (!entry.includes("+") && !entry.includes("@")) continue;
+        // A pnpm store entry is `@scope+name@version_hash`. It BOTH starts with
+        // `@` and contains `+`, so it has to be tested for `+` first — matching it
+        // as a scope directory instead would visit it as an empty scope and skip
+        // the very copy we are looking for.
+        if (entry.includes("+")) {
+          const full = join(pkgDir, entry);
+          try {
+            if (statSync(full).isDirectory()) visit(full, depth + 1);
+          } catch {
+            // not a directory
+          }
+          continue;
+        }
+        if (entry.startsWith("@")) {
+          const scopeDir = join(pkgDir, entry);
+          try {
+            for (const pkg of readdirSync(scopeDir)) {
+              const full = join(scopeDir, pkg);
+              if (statSync(full).isDirectory()) visit(full, depth + 1);
+            }
+          } catch {
+            // unreadable scope
+          }
+          continue;
+        }
         const full = join(pkgDir, entry);
         try {
           if (!statSync(full).isDirectory()) continue;
@@ -370,12 +419,19 @@ function versionAt(dir: string): number {
  * another, which is what a shell wrapper like gentle-shell produces.
  */
 export function agentRoots(agentDir: string): string[] {
-  const home = dirname(agentDir);
-  return [...new Set([
+  // The real home, NOT dirname(agentDir): with agentDir = ~/.pi/agent that
+  // yields ~/.pi, and joining ".pi/agent" onto it gives the nonsense ~/.pi/.pi/agent.
+  const home = homedir();
+  return [
+    // The pnpm stores, where the folder is renamed per version and hash.
     join(agentDir, "npm", "node_modules", ".pnpm"),
     join(home, ".gentle-shell", "agent", "npm", "node_modules", ".pnpm"),
     join(home, ".pi", "agent", "npm", "node_modules", ".pnpm"),
-  ])];
+    // A flat install, straight under the agent directory, not renamed and with
+    // no build step. This is the shape teams installing Pi directly get.
+    join(agentDir, "npm", "node_modules"),
+    join(home, ".gentle-shell", "agent", "npm", "node_modules"),
+  ];
 }
 
 /** Pi's own version, for the report only. Note this is NOT pi-ai's version:

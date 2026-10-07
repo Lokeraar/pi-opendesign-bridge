@@ -320,6 +320,21 @@ Three things worth reading:
   into store entries, which sit directly under the store root rather than under a
   `node_modules`, so a walk that looks only there sees an empty store.
 
+### Three shapes, one lookup
+
+Where the catalogs live depends on how Pi was installed, and all three are
+searched:
+
+```
+<global>/…/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/data
+<agent>/npm/node_modules/.pnpm/@earendil-works+pi-ai@…/node_modules/…/pi-ai/dist/providers/data
+<agent>/npm/node_modules/@earendil-works/pi-ai/providers/data        flat, no build
+```
+
+The third is what teams installing Pi directly under the agent directory get:
+no `.pnpm`, and no `dist` either. OpenRouter is read from whichever location is
+found first, and the rest of that location corroborate.
+
 The two scan results are printed separately on purpose: the first is what the
 extension does, the second is what a broader search could find. When they differ,
 the extension is missing something it could have used.

@@ -156,9 +156,22 @@ console.log("\na relocated agent dir and a differently-named store folder");
 
   const dirs = storeCatalogs(agentDir);
   check("a relocated agent dir is searched", agentRoots(agentDir).some((r) => r.includes("gentle-shell")), agentRoots(agentDir).join(","));
-  check("a store folder named after ANOTHER package is still found", dirs.length === 1, String(dirs.length));
-  check("and it is the right directory", dirs[0]?.endsWith(J("pi-ai", "dist", "providers", "data")), String(dirs[0]));
-  check("with both catalogs", dirs.length === 1 && readdirSync(dirs[0]).filter((f) => f.endsWith(".json")).length === 2);
+  const gentle = dirs.find((x) => x.includes("gentle-shell"));
+  check("a store folder named after ANOTHER package is still found", !!gentle, dirs.join(","));
+  check("and it is the right directory", gentle?.endsWith(J("pi-ai", "dist", "providers", "data")), String(gentle));
+  check("with both catalogs", gentle && readdirSync(gentle).filter((f) => f.endsWith(".json")).length === 2);
+
+  // The flat layout other teams report: no .pnpm, no dist.
+  const flatDir = mkdtempSync(J(tmpdir(), "enclave-flat-"));
+  const flatLeaf = J(flatDir, "agent/npm/node_modules/@earendil-works/pi-ai/providers/data");
+  mkdirSync(flatLeaf, { recursive: true });
+  writeFileSync(J(flatLeaf, "openrouter.json"), "{}");
+  writeFileSync(J(flatLeaf, "together.json"), "{}");
+  const flatAgent = J(flatDir, "agent");
+  const flatFound = storeCatalogs(flatAgent).filter((x) => x.includes("enclave-flat-"));
+  check("a flat install with no dist is found", flatFound.length === 1, flatFound.join(","));
+  check("and it holds both catalogs", flatFound.length === 1 && readdirSync(flatFound[0]).filter((f) => f.endsWith(".json")).length === 2);
+  rmSync(flatDir, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
 }
 

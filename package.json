@@ -1,6 +1,6 @@
 {
   "name": "@lokeraar/pi-opendesign-bridge",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "EnClave-style live model catalog for OpenDesign in Pi: /login once and the router's models appear in /model with real context windows, real output ceilings, reasoning levels and input modalities \u2014 resolved from the model catalog Pi already ships, no extra account needed.",
   "type": "module",
   "main": "./index.ts",

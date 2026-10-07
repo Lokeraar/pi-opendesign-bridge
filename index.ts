@@ -34,6 +34,14 @@
  */
 
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+/**
+ * Kept in step with package.json by `scripts/sync-models.mjs --stamp`, because
+ * a user running loose files in `~/.pi/agent/extensions` has no other way to
+ * tell which build they are on — and a bug report without that is a bug report
+ * we cannot act on.
+ */
+export const BRIDGE_VERSION = "0.2.6";
 import {
   makeRefreshModels,
   readProviderConfig,
@@ -46,8 +54,12 @@ export default async function (pi: ExtensionAPI) {
   const cfg = readProviderConfig(agentDir);
   const hasModels = Array.isArray(cfg?.models) && cfg.models.length > 0;
 
+  // Printed on every load so the number is visible in the session, not buried in
+  // a file the user would have to know to open.
+  console.error(`[opendesign-bridge] ${BRIDGE_VERSION} · agent dir ${agentDir}`);
+
   pi.registerProvider("opendesign", {
-    name: "OpenDesign",
+    name: `OpenDesign ${BRIDGE_VERSION}`,
     api: "openai-completions",
     authHeader: true,
     refreshModels: makeRefreshModels({ agentDir, fallbackBaseUrl: OPENDESIGN_BASE_URL }),

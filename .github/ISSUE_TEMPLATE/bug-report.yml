@@ -1,0 +1,160 @@
+name: Reporte de problema
+description: Algo no funciona — el modelo no aparece, los valores no cuadran, o /login falla.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por reportar. Todo lo que sigue está pensado para que podamos
+        reproducirlo y ubicar la causa sin pedirte nada más.
+
+        **El paso 1 es el que más nos sirve**: sin la salida del diagnóstico,
+        un reporte suele quedar en "no puedo reproducirlo".
+
+  - type: input
+    id: version
+    attributes:
+      label: Versión del bridge
+      description: >-
+        Al arrancar Pi se imprime una línea con la versión. Copiala tal cual.
+        También sale en el nombre del proveedor dentro de /model.
+      placeholder: "opendesign-bridge 0.2.6 · agent dir /home/usuario/.pi/agent"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: bridge
+    attributes:
+      label: ¿Qué bridge?
+      options:
+        - OpenDesign (`@lokeraar/pi-opendesign-bridge`)
+        - EnClave (`@lokeraar/pi-enclave-bridge`)
+        - Los dos
+        - No sé
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: ¿Cómo lo instalaste?
+      options:
+        - "pi install npm:@lokeraar/pi-opendesign-bridge"
+        - "pi install npm:@lokeraar/pi-enclave-bridge"
+        - Archivos copiados a ~/.pi/agent/extensions
+        - Cloné el repo
+    validations:
+      required: true
+
+  - type: input
+    id: pi-version
+    attributes:
+      label: Versión de Pi
+      description: "`pi --version`"
+      placeholder: "1.0.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Sistema operativo
+      options:
+        Windows
+        Linux
+        macOS
+        Android (Termux)
+        Otro
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Versión de Node
+      description: "`node --version`"
+      placeholder: "v22.11.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Salida del diagnóstico
+      description: >-
+        Corre esto y pega TODO lo que imprima. Dice qué versión está corriendo,
+        qué archivos están instalados y **en qué carpetas buscó el catálogo de
+        modelos** — que es justo lo que no se puede adivinar.
+
+        Instalado como paquete npm:
+
+        ```
+        node ~/.pi/agent/npm/node_modules/@lokeraar/pi-opendesign-bridge/scripts/diagnose.mjs
+        ```
+
+        O desde el repo:
+
+        ```
+        node scripts/diagnose.mjs
+        ```
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Qué esperabas
+      description: Un ejemplo concreto ayuda más que una descripción.
+      placeholder: >-
+        Que /model muestre deepseek-v4-pro con 384000 de salida, siguiendo lo que
+        dice openrouter.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Qué pasó
+      description: >-
+        Lo que viste, tal cual. Si hay un mensaje de error de Pi, cópialo
+        completo: a veces nombra lo que pasó en otra parte y no se entiende.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Pasos para reproducirlo
+      description: Desde abrir Pi hasta ver el problema.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: models-json
+    attributes:
+      label: Bloque de tu bridge en models.json
+      description: >-
+        Solo el bloque de tu provider, con las claves de la API ocultas.
+        Si los valores están mal, vemos de inmediato si es el donante o el
+        archivo.
+
+        ```
+        node -e "const j=require(process.env.HOME+'/.pi/agent/models.json');
+        const p=j.providers.opendesign||j.providers.EnClave;
+        console.log(JSON.stringify({...p,apiKey:'<oculto>'},null,2))"
+        ```
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Antes de enviar
+      options:
+        - label: Probé con la última versión publicada
+          required: true
+        - label: Eliminé cualquier copia local en ~/.pi/agent/extensions que pudiera duplicar el registro
+        - label: Adjunté la salida del diagnóstico completa

@@ -33,6 +33,9 @@
  * arrive through the live layer with probed values — no manual sync needed.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -41,7 +44,25 @@ import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
  * tell which build they are on — and a bug report without that is a bug report
  * we cannot act on.
  */
-export const BRIDGE_VERSION = "0.2.7";
+export const BRIDGE_VERSION = readPackageVersion() ?? "0.0.0-unknown";
+
+/**
+ * The version comes from package.json, which is the only place it is written.
+ *
+ * It used to be a constant next to this line, and it drifted the moment a
+ * release bumped one and not the other. Two sources of truth always drift; there
+ * is now one. Undefined for a loose copy in `~/.pi/agent/extensions`, which has
+ * no manifest beside it.
+ */
+function readPackageVersion(): string | undefined {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const manifest = JSON.parse(readFileSync(join(here, "package.json"), "utf8")) as { version?: string };
+    return typeof manifest.version === "string" ? manifest.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
 import {
   makeRefreshModels,
   readProviderConfig,

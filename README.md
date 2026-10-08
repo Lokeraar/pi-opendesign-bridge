@@ -25,6 +25,21 @@ Install it in Pi:
 pi install npm:@lokeraar/pi-opendesign-bridge
 ```
 
+Straight from the repository, if you would rather follow `main` than a release:
+
+```bash
+pi install git:github.com/Lokeraar/pi-opendesign-bridge
+```
+
+The git form tracks `main`, so it can change under you. Prefer npm unless you are
+testing something specific, or a fix has not been published yet — during that
+window this is the only way to get it. To pin a release:
+
+```bash
+pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.2.7
+```
+
+
 > 💛 If this bridge ever saved you from guessing a model's limits, a ⭐ on the
 > repo goes a long way — it is the only thing that helps somebody else find it.
 > Every star is read by a human, and so is every bug report.

@@ -9,8 +9,15 @@
  */
 
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const ROOT = join(new URL(".", import.meta.url).pathname, "..");
+
+// On Windows a dynamic import refuses a bare absolute path ("C:\..." →
+// ERR_UNSUPPORTED_ESM_URL_SCHEME), and `.pathname` on a file: URL keeps a
+// leading slash and percent-encodes spaces, which Node then reads as a package
+// name. Both forms are portable; the raw path is neither.
+const load = (file) => import(pathToFileURL(join(ROOT, file)).href);
 const {
   BUNDLED_FIELDS,
   PROVIDER_PRIORITY,
@@ -20,7 +27,7 @@ const {
   readPiCatalogs,
   findBundledCatalogDir,
   readCuratedIndex,
-} = await import(join(ROOT, "donors-opendesign.ts"));
+} = await load("donors-opendesign.ts");
 
 let passed = 0;
 const failed = [];
@@ -138,7 +145,7 @@ console.log("\na relocated agent dir and a differently-named store folder");
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join: J } = await import("node:path");
-  const { storeCatalogs, agentRoots } = await import(join(ROOT, "donors-opendesign.ts"));
+  const { storeCatalogs, agentRoots } = await load("donors-opendesign.ts");
 
   const home = mkdtempSync(J(tmpdir(), "enclave-layout-"));
   const store = J(
@@ -178,7 +185,7 @@ console.log("\na relocated agent dir and a differently-named store folder");
 console.log("\na broken catalog tree must never take the provider down");
 {
   const { readFileSync: rf3 } = await import("node:fs");
-  const { makeRefreshModels } = await import(join(ROOT, "opendesign-live.ts"));
+  const { makeRefreshModels } = await load("opendesign-live.ts");
   const agentDir = process.env.HOME + "/" + ".pi/agent";
   const cfg = rf3(join(agentDir, "models.json"), "utf8");
   const key = JSON.parse(cfg).providers?.opendesign?.apiKey;

@@ -41,7 +41,7 @@ import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
  * tell which build they are on — and a bug report without that is a bug report
  * we cannot act on.
  */
-export const BRIDGE_VERSION = "0.2.6";
+export const BRIDGE_VERSION = "0.2.7";
 import {
   makeRefreshModels,
   readProviderConfig,

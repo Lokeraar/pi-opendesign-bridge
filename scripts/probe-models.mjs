@@ -28,12 +28,18 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
+
+// On Windows a dynamic import refuses a bare absolute path ("C:\..." →
+// ERR_UNSUPPORTED_ESM_URL_SCHEME), and `.pathname` on a file: URL keeps a
+// leading slash and percent-encodes spaces, which Node then reads as a package
+// name. Both forms are portable; the raw path is neither.
+const load = (file) => import(pathToFileURL(join(ROOT, file)).href);
 const { probeNewModel, fetchLiveListing, readProviderConfig, STATIC_MODELS, OPENDESIGN_BASE_URL } =
-  await import(join(ROOT, "opendesign-live.ts"));
+  await load("opendesign-live.ts");
 
 // ---------------------------------------------------------------- arguments
 const argv = process.argv.slice(2);

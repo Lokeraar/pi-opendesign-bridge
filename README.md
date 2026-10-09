@@ -7,7 +7,19 @@
   <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI" />
 </a>
 
-OpenDesign provider bridge for [pi](https://github.com/earendil-works/pi): registers the `opendesign` provider (`https://amr-link.open-design.ai/v1`) via `pi.registerProvider()` and keeps its catalog in sync with the endpoint. After `/login opendesign`, the models you can actually use appear in `/model` **with their real structure** — input modalities, context window, max output, reasoning levels and `off` behavior — instead of generic guesses.
+OpenDesign provider bridge for [pi](https://github.com/earendil-works/pi).
+
+Pi is a coding assistant that talks to AI models. OpenDesign is a gateway at
+`https://amr-link.open-design.ai/v1`, registered here as the provider
+`opendesign`. When you connect the two, Pi needs to know
+each model's real shape: how much text it can read, how much it can write back,
+whether it understands images, and which thinking-effort settings it accepts.
+
+OpenDesign's own `/models` address answers with ids and coarse metadata only — no
+reasoning levels, no real output ceiling. Without those, Pi falls back to generic
+guesses. This bridge fills the gap: after `/login opendesign`, the models your key
+can actually use appear in `/model` **with their real structure** instead of
+defaults that merely look plausible.
 
 > 📦 Page: [pi.dev/packages/@lokeraar/pi-opendesign-bridge](https://pi.dev/packages/@lokeraar/pi-opendesign-bridge)
 
@@ -71,11 +83,31 @@ pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.2.9
 
 Connecting Pi to OpenDesign takes more than a base URL:
 
-- Pi needs the **full model structure** to drive `/model`, the thinking-level selector and context budgets — but an OpenAI-compatible `/v1/models` only answers with ids and coarse metadata. There are no reasoning levels, no official max output, and no `off` semantics to fetch — and unlike paid tiered gateways, **there is no premium catalog hiding behind your key: what the endpoint returns IS the catalog**.
-- Hand-curated `~/.pi/agent/models.json` entries go stale the moment the endpoint adds or discontinues a model (a new "Hunyuan H4 Preview" today, a retired model tomorrow — nobody announces it in the payload).
-- `/providers sync` (provider-manager) can only fill unknown ids with **vanilla defaults** (128k/16k, `medium` only) and never refreshes existing ones — the opposite of "real values".
+Connecting Pi to OpenDesign takes more than pasting a base URL, for three
+concrete reasons.
 
-This bridge solves both sides at once: a **curated structure layer** (verified values that never get clobbered) plus a **live `/models` fetch layer** (membership synced automatically, brand-new ids *measured* with tiny probe requests). And it ships with **zero premium/tier/quota logic** — completely free: the endpoint's answer for your key is the catalog, full stop.
+**Pi needs the full model structure, and OpenDesign does not provide it.** Pi
+uses those numbers to drive `/model`, the thinking-level selector and context
+budgets. An OpenAI-compatible `/v1/models` endpoint answers with ids and coarse
+metadata: no reasoning levels, no official output ceiling, no `off` semantics.
+And there is nothing richer to fetch behind the scenes — unlike paid tiered
+gateways, **there is no premium catalog hidden behind your key. What the endpoint
+returns is the catalog.**
+
+**Hand-editing `~/.pi/agent/models.json` goes stale immediately.** The moment the
+endpoint adds a model (a new "Hunyuan H4 Preview" today) or discontinues one
+tomorrow, your hand-written entry is wrong, and the payload never announces it.
+
+**`/providers sync` fills gaps with placeholder numbers.** It can only fill unknown
+ids with defaults (128k context, 16k output, `medium` thinking only) and never
+refreshes ids it already knows. That is the opposite of "real values".
+
+This bridge handles both halves of the problem at once: a **curated structure
+layer** with verified values that the endpoint cannot overwrite, plus a **live
+`/models` layer** that keeps membership current and *measures* brand-new ids with
+a handful of tiny test requests. It also ships with **no premium, tier or quota
+logic at all** — completely free. Whatever the endpoint answers for your key is
+the catalog.
 
 ## 📋 Releases
 
@@ -279,56 +311,81 @@ The live `/models` fetch, the curated layer, and auto-probe for new ids.
 
 The provider uses a **two-layer model catalog** to ensure reliability:
 
-| Layer | Source | Purpose |
-|---|---|---|
-| **1. Curated structure** | `models.json` (if present) → bundled static catalog | Authoritative **values** for known ids: context window, max output (`min(gateway budget, official cap)`), reasoning levels, `off` semantics, role compatibility. Verified against vendor docs and measured against the gateway — never overwritten by the endpoint. |
-| **2. Live `/models` fetch** | `GET /v1/models` with your key | Authoritative **membership**: new models appear automatically, discontinued ones drop out, non-chat ids are filtered. The live list is merged over the curated layer and persisted between runs. |
+Two layers split the work, because the endpoint is good at one thing and silent
+about the other.
 
-The registration is synchronous on purpose: the bundled catalog is available immediately, and Pi's Models runtime drives the live refresh (network refresh at interactive startup and on `/model` search, cache-only in headless modes), persisting the overlay in `~/.pi/agent/models-store.json`.
+| Layer | Where it comes from | What it decides |
+|---|---|---|
+| **1. Curated structure** | `models.json` if present, otherwise the catalog bundled with this package | The **values** for known models: context window, maximum output (`min(gateway budget, official cap)`), reasoning levels, `off` behaviour, role compatibility. Checked against vendor documentation and measured against the gateway. The endpoint never overwrites these. |
+| **2. Live `/models` fetch** | `GET /v1/models` using your key | **Membership only**: which models exist right now. New ones appear, discontinued ones drop out, non-chat ids are filtered out. The live list is merged over the curated layer and saved between runs. |
+
+Registration goes through `pi.registerProvider()` and is deliberately
+synchronous: the bundled catalog is ready the moment Pi asks, and Pi's own model runtime then drives the live refresh — hitting the
+network at interactive startup and during `/model` search, and using only the
+cache in headless modes. The merged result is stored in
+`~/.pi/agent/models-store.json`.
 
 ### 🔎 Live refresh phases
 
-| Phase | When | Network | What it does |
+| Phase | When it runs | Uses network? | What it does |
 |---|---|---|---|
-| **Restore** | Every runtime creation (`pi -p`, `--list-models`, sessions) | no | Rebuilds the last-known catalog from `models-store.json`, re-merged so curated values win; re-persists only when the merge changed. |
-| **Live fetch** | Interactive startup / `/model` search (15 s budget; skipped when `PI_OFFLINE` is set) | yes | `GET /v1/models` → merge membership → persist. Errors are swallowed: the curated layer always keeps Pi usable. |
+| **Restore** | Every time Pi creates the provider (`pi -p`, `--list-models`, sessions) | no | Rebuilds the last-known catalog from `models-store.json`, merging again so the curated values win. It only writes back when the merge actually changed something. |
+| **Live fetch** | Interactive startup and `/model` search — 15 second budget, skipped when `PI_OFFLINE` is set | yes | Calls `GET /v1/models`, merges the membership, saves the result. Any error is swallowed on purpose: the curated layer keeps Pi usable regardless. |
 
 ### 🧪 Auto-probe for brand-new models
 
-When the endpoint publishes an id the curated layer doesn't know, the bridge **measures it** (~12 tiny requests, no manual editing):
+When the endpoint announces a model the curated layer has never seen, the bridge
+does not guess: it **measures the model** with about a dozen tiny requests, and
+writes down the answers.
 
-- **Reasoning levels** — each of `minimal · low · medium · high · xhigh · max` is probed; HTTP-rejected levels become `null`, so `clampThinkingLevel` snaps to the nearest supported level instead of sending one the API refuses.
-- **`off` behavior** — `reasoning_effort:"none"` is only mapped to `off` when it is accepted **and** returns 0 reasoning tokens; rejected (`glm-5.3*`, `gpt-6.1-sol`) or ineffective (kimi) → `off` is hidden from the UI.
-- **Output ceiling** — `max_tokens` is walked up until the first rejection; the model gets `min(context_budget, highest accepted)`.
-- **Input modalities / context** — taken from the endpoint metadata (`text`/`image`; the Pi schema does not model audio/video/file ids).
-- If the probe fails mid-way (network, timeout), a **conservative placeholder** is used — a broken probe never blocks the refresh.
+- **Reasoning levels.** Each of `minimal · low · medium · high · xhigh · max` is
+  tried. Any level the API rejects is recorded as `null`, so Pi's
+  `clampThinkingLevel` snaps to the closest working level instead of sending one
+  the API refuses.
+- **`off` behaviour.** Sending `reasoning_effort:"none"` only counts as "thinking
+  can be turned off" when the API accepts it **and** the reply contains zero
+  reasoning tokens. If it is rejected (`glm-5.3*`, `gpt-6.1-sol`) or accepted but
+  ignored, the `off` option is hidden from the interface.
+- **Output ceiling.** `max_tokens` is increased step by step until the first
+  rejection; the model gets `min(context_budget, highest accepted)`.
+- **Input types and context.** Taken from the endpoint's own metadata. Pi
+  understands `text` and `image`; audio, video and file ids are not modelled.
+- **If the probe fails partway** — a dropped connection, a timeout — a
+  conservative placeholder is used instead. A failed probe never blocks the
+  refresh.
 
 > [!NOTE]
 > `PI_OPENDESIGN_LIVE=0` disables the live layer entirely (curated catalog only). The same applies via `PI_OFFLINE` for the network phase.
 
 ## 🧬 Value donors — where the numbers come from
 
-Values do not only come from hand-curating. Pi ships a catalog per provider in
-its own package, and this bridge reads them:
+The numbers do not all come from hand-editing. Pi ships one catalog per provider
+inside its own package, and this bridge reads them:
 
 ```
 <active Pi package>/node_modules/@earendil-works/pi-ai/dist/providers/data/<provider>.json
 ```
 
-No credential is needed to read them — a key is only needed to *call* an API.
-The active Pi package is discovered at runtime; its path varies by operating
-system, prefix and installation method, so this is a layout description, not a
-hardcoded path. Agent-local store and flat-install layouts are fallbacks. Pi
-currently ships 42 catalogs in this location; the set updates with the installed
-Pi version. Restart Pi or refresh the provider after upgrading to use them.
+Reading them needs no credential — an API key is only required to *call* a model,
+not to read a file Pi already installed.
 
-Matching uses an exact normalized key from either the model id or its human
-`name`: `deepseek-v4.1-flash` therefore finds DeepSeek's entry whose id is
-`deepseek-flash` and whose name is `DeepSeek V4.1 Flash`. Vendor prefixes are
-removed from ids, while punctuation and spaces in the name are normalized. This
-is not fuzzy similarity; dated variants stay distinct because their names
-include the date. The exact id that matched is recorded with its prefix, so a
-match can be audited:
+The location is worked out at run time from the Pi installation that is actually
+running. The path differs between operating systems, install prefixes and package
+managers, so the line above describes a layout, not a fixed path. Agent-local store
+and flat-install layouts are used as fallbacks. Pi currently ships 42 catalogs
+there, and that set changes with the Pi version: after upgrading Pi, restart it or
+refresh the provider to pick up the new files.
+
+**How a model is matched.** Two spellings of the same model have to meet. The
+endpoint says `deepseek-v4.1-flash`; DeepSeek's own catalog lists that model with
+the id `deepseek-flash` and the written name `DeepSeek V4.1 Flash`. So matching
+uses an exact key derived from *either* the id or the `name`, with vendor prefixes
+removed from ids and punctuation and spaces removed from names. Both spellings
+produce the same key.
+
+This is not fuzzy matching. Dated variants stay separate because their names
+contain the date — `deepseek-v4-flash` and `deepseek-v4-flash-0731` never collide.
+The full matched id is recorded with its prefix, so any match can be checked:
 
 ```json
 "provenance": {
@@ -343,62 +400,77 @@ match can be audited:
 
 ### The order
 
+Each field is decided separately, by this order:
+
+```text
+1. a hand-written vendor card
+2. the catalog belonging to the model's own vendor
+3. a simple majority among catalogs that state the field   (only if step 2 is absent)
+4. openrouter                                              (only if step 3 has no majority)
+5. whatever is already written                             (only if no catalog states the field)
 ```
-the vendor's own model card
-  > the catalog named after the model's vendor
-  > the value most catalogs agree on
-  > openrouter
-  > what is already written
-```
 
-**The vendor's own catalog decides, and it is not one vote among many.** A
-catalog the vendor maintains records what the model implements. A reseller's
-records what one gateway happens to accept, and gateways disagree: for
-`deepseek-v4.1-flash`, eight catalogs say `maxTokens` 384000 — DeepSeek's own
-first among them — while openrouter alone says 943718, a figure this endpoint
-rejects. So when the vendor's number differs from everybody else's, the
-vendor's number is the one published.
+**The vendor's own catalog wins, and it is not one vote among many.** Many of
+the catalogs Pi ships belong to *resellers* — companies that host other
+companies' models. A reseller's catalog describes what one gateway happens to
+accept. The vendor's own catalog describes the model itself. When they disagree,
+the vendor is describing the thing and the reseller is describing one doorway to
+it.
 
-**A model is matched to its vendor by family**, not by guessing: `kimi` belongs
-to Moonshot, `claude` to Anthropic, `gpt` to OpenAI, `glm` to zai, `deepseek` to
-DeepSeek. This cannot be derived automatically — every catalog stamps
-`provider` on its entries, but a reseller stamps its own name on a model it
-resells. So it is recorded as data, one line per family, the same way the dated
-model aliases are recorded.
+The case that forced this rule: for `deepseek-v4.1-flash`, eight catalogs state an
+output ceiling of 384,000 tokens — DeepSeek's own first among them — while
+openrouter alone says 943,718. The old rule published openrouter's number, and
+this endpoint rejected it. The vendor's number is what gets published now.
 
-**When there is no vendor catalog, agreement decides.** A model like
-`qwen3.8-max` has no first-party catalog in Pi, and there the value most
-catalogs agree on is what stands. It needs a simple majority of the catalogs
-that state the field: three votes out of ten is a plurality, not corroboration,
-and a plurality falls back to openrouter. Nothing is averaged — a number nobody
-published is not a consensus, it is an invention.
+**How the vendor is identified.** By the model's family name: `kimi` belongs to
+Moonshot, `claude` to Anthropic, `gpt` to OpenAI, `glm` to zai, `deepseek` to
+DeepSeek, `mimo` to Xiaomi, `nemotron` to NVIDIA. This cannot be worked out from
+the files, because every catalog stamps its own name as the provider — including
+a reseller stamping its name on a model it did not make. So the list is written
+down explicitly, one line per family, exactly like the dated-model aliases.
 
-**A ceiling that reaches the model's own window is treated as silence.** Some
-catalogs write the row that way: Moonshot lists `kimi-k3` with
-`contextWindow: 1048576` and `maxTokens: 1048576`, the same number twice. A
-ceiling equal to the window leaves no room for the prompt that goes with it, so
-it cannot be a statement about output, and the field falls through to the
-catalogs that state a ceiling a model can serve.
+**With no vendor catalog, the catalogs vote.** A model like `qwen3.8-max` has no
+first-party catalog in Pi, so there the value most catalogs agree on is used. It
+needs a *simple majority* of the catalogs that state the field at all: three votes
+out of ten is a split, not agreement, and a split falls back to openrouter.
+Nothing is averaged — an average of two real numbers is a third number that nobody
+published.
 
-**A model is found by its human name as well as its id.** Pi's vendor catalog
-writes `id: "deepseek-flash"` with `name: "DeepSeek V4.1 Flash"`, so the id the
-endpoint uses and that name are the same key once punctuation is stripped. This
-is an exact match on a different field, not a similarity guess, which is what
-keeps it safe: `deepseek-v4-flash` and `deepseek-v4-flash-0731` stay apart
-because the date is in the name too, and `glm-5.3` never reaches `glm-5.3-flash`.
+**A ceiling that fills the whole window is treated as silence.** Some catalogs
+write the row that way: Moonshot lists `kimi-k3` with a context window of
+1,048,576 and an output ceiling of 1,048,576 — the same number twice. But the
+prompt has to fit in the window alongside the output, so a ceiling that fills the
+window cannot be served. That figure is treated as no answer at all, and the field
+falls through to catalogs that state a ceiling a model can keep.
+
+**A model is found by its written name as well as its id.** DeepSeek's catalog
+lists the model as `id: "deepseek-flash"` but names it `"DeepSeek V4.1 Flash"`.
+Once punctuation is removed, that written name and the endpoint's
+`deepseek-v4.1-flash` produce the same key, which is how the vendor's own entry
+becomes reachable without hardcoding an alias. It is an exact match on a different
+field, not a similarity guess — which is what keeps it safe: `deepseek-v4-flash`
+and `deepseek-v4-flash-0731` stay apart because the date appears in the name too,
+and `glm-5.3` can never reach `glm-5.3-flash`.
 
 ### Claims and silence are resolved per key
 
-An explicit vendor value — including `null` — is authoritative for that
-thinking level. A key the vendor omits is silence, and only that key falls
-through to the remaining catalogs and their majority rule. This prevents a
-reseller's partial map from erasing levels the vendor declared, and lets a
-partial official map be completed through corroboration.
+The thinking levels a model accepts are not one value but seven independent ones
+(`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Each is decided
+separately.
 
-`contextWindow` belongs to the endpoint and is never overwritten by a donor.
-`cost` is excluded from published donor values because a catalog's price is
-for a different reseller. The donor module can show an approximate min/max range
-for inspection, but does not publish it as OpenDesign's price.
+If the vendor states a level — even `null`, meaning "not supported" — that answer
+is final. If the vendor simply does not mention the level, that silence says
+nothing, and only that one level is decided by the other catalogs. Two useful
+consequences: a reseller listing only two levels cannot erase the five the vendor
+declared, and a vendor listing only one level does not block the others from being
+filled in.
+
+**Two fields are never taken from a catalog at all.** `contextWindow` describes
+what *this* endpoint serves, not what the model can do, so it belongs to the
+endpoint. `cost` belongs to whoever charges it: a catalog's price is another
+reseller's price, and combining several would produce a number OpenDesign may
+never charge. The donor module can report an approximate minimum-to-maximum range
+when asked directly, for inspection only — it is not published as a price.
 
 ### What no donor may set
 
@@ -430,45 +502,49 @@ the live endpoint while the quota is out.
 
 Named here because each one had a symptom that looked like something else.
 
-**A `402` is not a measurement.** The probe used to treat every HTTP status as
-the model's opinion, so an exhausted quota — `402`, `401`, `403`, `429`, any
-`5xx`, any timeout — was read as "this model has no reasoning levels and a small
-ceiling", and then written down. Before the fix the audit reported 25 false
-positives; after, zero. Only `400` and `422` are now treated as a parameter
-rejection, because only those mean the request shape was refused.
+These are listed because each one produced a symptom that pointed somewhere else.
 
-**A `502` can be a `400`.** This router proxies other providers, so when the
-inference provider refuses a parameter the answer arrives as
-`502 "Inference provider returned HTTP 400"`. Judging by status alone threw that
-measurement away, which cost the real ceiling on 12 of 14 models. The upstream
-status in the body is now what counts.
+**An error code is not a measurement.** The probe used to read every HTTP status
+as the model's opinion. So an exhausted quota — `402`, `401`, `403`, `429`, any
+`5xx`, any timeout — was recorded as "this model has no reasoning levels and a
+small output ceiling". A failed request was being written down as a fact about the
+model. The audit reported 25 false positives before the fix and zero after. Only
+`400` and `422` count as a refusal of the request's shape; everything else means
+"no answer".
 
-**A ceiling that the window cannot hold is impossible, not large.** OpenRouter
-listed `inkling` at 471,859 against a 262,144 window here, and the endpoint
-refused it with *"This request needs about N tokens (messages + tools +
-max_tokens)"*. Clamped to the window minus a prompt reserve — and it cannot equal
-the window either: 262,144 was rejected while 261,120 passed.
+**A `502` can really be a `400`.** This router forwards to other providers, so
+when the provider behind it rejects a parameter, the reply arrives as
+`502 "Inference provider returned HTTP 400"`. Judging by the outer status discarded
+that measurement and lost the true ceiling on 12 of 14 models. The upstream status
+inside the body is what counts now.
+
+**A ceiling bigger than the window is impossible, not generous.** OpenRouter
+listed `inkling` with a 471,859-token ceiling against a 262,144-token window here,
+and the endpoint refused every request with *"This request needs about N tokens
+(messages + tools + max_tokens)"*. It is clamped to the window minus a prompt
+reserve — and it cannot be *equal* to the window either: 262,144 was rejected
+while 261,120 passed.
 
 **A catalog that omits a key has not claimed anything.** An explicit `null` is a
-claim and is applied; an absent key is silence and does not erase a known value.
-Thinking maps are therefore merged key by key. Without that rule
-`kimi-k2.7-code` and both `mimo-v2.6-*` lost working reasoning levels to a gap in
-the catalog.
+claim and is applied. A missing key is silence and erases nothing. That is why
+thinking levels are merged level by level: without it, `kimi-k2.7-code` and both
+`mimo-v2.6-*` lost working reasoning levels because of a gap in someone else's
+catalog.
 
-**`maxTokens` must never be `null`.** Pi's model list calls `.toString()` on it
-and crashes with *"Cannot read properties of undefined"*, taking the whole list
-with it.
+**`maxTokens` must never be `null`.** Pi's model list calls `.toString()` on it,
+crashes with *"Cannot read properties of undefined"*, and takes the entire list
+down with it.
 
-**A scoped package publishes private by default.** `npm publish` failed with
-`E402 "You must sign up for private packages"`, which reads like a billing
-problem and is not one: restricted packages need a paid plan. Declared in the
-manifest as `"publishConfig": { "access": "public" }`, so a bare `npm publish`
+**A scoped package publishes as private by default.** `npm publish` failed with
+`E402 "You must sign up for private packages"`, which sounds like a billing
+problem and is not one: private packages need a paid plan. Fixed by declaring
+`"publishConfig": { "access": "public" }` in the manifest, so a bare `npm publish`
 does the right thing.
 
 ## 🩺 Diagnose
 
-When someone reports that models are missing or that values did not come
-through, the useful question is not their tier but this:
+When someone reports that models are missing, or that the numbers look wrong,
+the useful question is not which plan they are on. It is this:
 
 ```bash
 npm run diagnose
@@ -493,23 +569,24 @@ coverage of this provider
   faltantes             deepseek-v4-pro, mimo-v2.6-turbo, …
 ```
 
-Three things worth reading:
+Four details worth reading:
 
-- **`la extension usa`** is what the extension itself resolved. If that line
-  says `NINGUNO`, no donor ran and every value fell back to what was already
-  written. That is indistinguishable from "the donors do not work" unless you
-  print it.
-- **`faltantes`** compares what your key is served against what is published. A
-  non-empty line is the subscription-tier problem: the endpoint has models the
-  extension is not showing, and they have to be added by hand.
-- The primary catalog path is discovered from Pi's active installation at
-  runtime. Its concrete path varies across operating systems, prefixes,
-  installation methods and launchers; it is not hardcoded to this device.
-- If the active Pi package is not found, supported agent-local store and
-  flat-install layouts are searched as fallbacks. The store is searched under
-  the running agent directory **and its siblings**, so a wrapper that relocates
-  it resolves too. Pnpm store entries sit directly under the store root rather
-  than under a nested `node_modules`, so the fallback walk accounts for that.
+- **`la extension usa`** is the path the extension itself resolved. If it says
+  `NINGUNO`, no catalog was found, so every value came from what was already
+  written. Without this line printed, that looks exactly the same as "the
+  catalogs are broken" — which is why it is here.
+- **`faltantes`** lists models your key can use but the extension is not
+  publishing. A non-empty line means the endpoint serves models that still have
+  to be added by hand.
+- **Where the catalog came from.** The primary path is discovered from the Pi
+  installation that is actually running. It differs across operating systems,
+  prefixes, install methods and launchers — it is not fixed to one device.
+- **What the fallbacks did.** If the active Pi package is not found, the
+  agent-local store and flat-install layouts are searched instead. The store is
+  searched in the running agent directory **and its siblings**, so a wrapper that
+  relocates the agent directory still resolves. Note that store entries sit
+  directly under the store root rather than inside a nested `node_modules`, and
+  the fallback walk accounts for that.
 
 ### Runtime discovery, with fallbacks
 
@@ -526,9 +603,9 @@ package is not found, the bridge searches the agent-local pnpm store and flat
 install layout as fallbacks. The directory actually found is reported by the
 diagnose script.
 
-The two scan results are printed separately on purpose: the first is what the
-extension does, the second is what a broader search could find. When they differ,
-the extension is missing something it could have used.
+The two scan results are printed separately on purpose. The first is what the
+extension actually resolved; the second is what a wider search could have found.
+When the two differ, the extension is missing a catalog it could have used.
 
 ## 🔑 Authentication
 
@@ -610,7 +687,8 @@ opendesign-live.ts  # live fetch engine + auto-probe + bundled catalog (node bui
 
 ### Where each value comes from
 
-Every published model carries a `provenance` block, so you never have to guess whether a number was measured or merely claimed:
+Every published model carries a `provenance` block, so you never have to guess
+whether a number was measured, or merely claimed:
 
 | `provenance` | Meaning |
 |---|---|
@@ -619,7 +697,9 @@ Every published model carries a `provenance` block, so you never have to guess w
 | `gateway` | The endpoint **declared** it. `contextWindow` and `input` are always at best this. |
 | `vanilla` | The conservative fallback. Used only when the probe could not run. |
 
-`contextWindow` is never measured: an over-long prompt is silently truncated, which is indistinguishable from success. Treat it as a claim, and confirm it against vendor documentation before curating it.
+`contextWindow` is never measured, and deliberately so: an over-long prompt is
+silently truncated, which looks exactly like success. Treat it as a claim and
+check it against vendor documentation before trusting it.
 
 ### Maintaining the curated layer
 

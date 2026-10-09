@@ -267,6 +267,52 @@ console.log("\nthe vendor's own catalog decides, and an impossible ceiling does 
   check("nvidia is the vendor for nemotron-ultra", r3.source === "nvidia", String(r3.source));
   check("its ceiling is used", r3.entry.maxTokens === 65536, String(r3.entry.maxTokens));
   check("and the levels it omits are kept", r3.entry.thinkingLevelMap && r3.entry.thinkingLevelMap.low === "low", JSON.stringify(r3.entry.thinkingLevelMap));
+
+  const haikuVendor = {
+    provider: "anthropic",
+    models: new Map(),
+    modelsByName: new Map(),
+  };
+  const haikuEntry = {
+    id: "claude-haiku-5-5",
+    name: "Claude Haiku 5.5",
+    thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+  };
+  haikuVendor.models.set(haikuEntry.id, haikuEntry);
+  haikuVendor.modelsByName.set(normaliseModelKey(haikuEntry.name), haikuEntry);
+  const haikuReseller = cat("opencode", {
+    "claude-haiku-5.5": { id: "claude-haiku-5-5", thinkingLevelMap: { xhigh: "xhigh", max: "max" } },
+  });
+  const haiku = resolveModel("claude-haiku-5.5", undefined, [haikuVendor, haikuReseller], false);
+  check("Claude Haiku 5.5 resolves to Anthropic", haiku.source === "anthropic", String(haiku.source));
+  check("the vendor's explicit null is retained", haiku.entry.thinkingLevelMap?.off === null, JSON.stringify(haiku.entry.thinkingLevelMap));
+  check("the vendor's full map is retained", haiku.entry.thinkingLevelMap?.low === "low" && haiku.entry.thinkingLevelMap?.high === "high", JSON.stringify(haiku.entry.thinkingLevelMap));
+
+  const explicitNullHaiku = {
+    provider: "anthropic",
+    models: new Map([["claude-haiku-5-5", { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", thinkingLevelMap: { off: null } }]]),
+    modelsByName: new Map([[normaliseModelKey("Claude Haiku 5.5"), { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", thinkingLevelMap: { off: null } }]]),
+  };
+  const explicitNull = resolveModel("claude-haiku-5.5", undefined, [
+    explicitNullHaiku,
+    cat("openrouter", { "claude-haiku-5.5": { id: "anthropic/claude-haiku-5.5", thinkingLevelMap: { off: "none" } } }),
+    cat("opencode", { "claude-haiku-5.5": { id: "claude-haiku-5-5", thinkingLevelMap: { off: "none" } } }),
+  ], false);
+  check("vendor explicit null beats reseller majority", explicitNull.entry.thinkingLevelMap?.off === null, JSON.stringify(explicitNull.entry.thinkingLevelMap));
+
+  const partialHaikuVendor = {
+    provider: "anthropic",
+    models: new Map([[haikuEntry.id, { id: haikuEntry.id, name: haikuEntry.name, thinkingLevelMap: { max: "max" } }]]),
+    modelsByName: new Map([[normaliseModelKey(haikuEntry.name), { id: haikuEntry.id, name: haikuEntry.name, thinkingLevelMap: { max: "max" } }]]),
+  };
+  const partialHaiku = resolveModel("claude-haiku-5.5", undefined, [
+    partialHaikuVendor,
+    cat("openrouter", { "claude-haiku-5.5": { id: "anthropic/claude-haiku-5.5", thinkingLevelMap: { max: "max", high: "high", low: "low" } } }),
+    cat("opencode", { "claude-haiku-5.5": { id: "claude-haiku-5-5", thinkingLevelMap: { max: "max", high: "high", low: "low" } } }),
+  ], false);
+  check("the vendor's declared max stays authoritative", partialHaiku.entry.thinkingLevelMap?.max === "max", JSON.stringify(partialHaiku.entry.thinkingLevelMap));
+  check("vendor silence on high uses the corroborating majority", partialHaiku.entry.thinkingLevelMap?.high === "high", JSON.stringify(partialHaiku.entry.thinkingLevelMap));
+  check("vendor silence on low uses the corroborating majority", partialHaiku.entry.thinkingLevelMap?.low === "low", JSON.stringify(partialHaiku.entry.thinkingLevelMap));
 }
 
 console.log(`\n${passed} passed, ${failed.length} failed`);

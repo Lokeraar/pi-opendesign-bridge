@@ -836,33 +836,18 @@ export function resolveByCorroboration(
   vendorProvider?: string,
   primary?: string,
 ): FieldResolution | undefined {
-  if (field === "thinkingLevelMap") {
-    const perKey = new Map<string, Map<string, { value: unknown; providers: string[] }>>();
-    for (const hit of hits) {
-      const map = hit.entry.thinkingLevelMap;
-      if (!map || typeof map !== "object") continue;
-      for (const [level, value] of Object.entries(map)) {
-        if (!perKey.has(level)) perKey.set(level, new Map());
-        const bucket = perKey.get(level)!;
-        const key = JSON.stringify(value);
-        if (!bucket.has(key)) bucket.set(key, { value, providers: [] });
-        bucket.get(key)!.providers.push(hit.provider);
-      }
-    }
-    if (!perKey.size) return undefined;
-    const out: Record<string, unknown> = {};
-    let total = 0;
-    for (const [level, bucket] of perKey) {
-      const r = pick(bucket, vendorProvider, primary);
-      total += r.total;
-      out[level] = r.winner.value;
-    }
-    return { value: out, votes: 0, total, how: "majority", providers: [] };
-  }
+  if (field === "thinkingLevelMap") return resolveThinkingLevelMap(hits, primary);
 
   const bucket = new Map<string, { value: unknown; providers: string[] }>();
+  const levelKey = field.startsWith("thinkingLevelMapKey:")
+    ? field.slice("thinkingLevelMapKey:".length)
+    : undefined;
   for (const hit of hits) {
-    const value = hit.entry[field];
+    const value = levelKey === undefined
+      ? hit.entry[field]
+      : hit.entry.thinkingLevelMap && Object.prototype.hasOwnProperty.call(hit.entry.thinkingLevelMap, levelKey)
+        ? hit.entry.thinkingLevelMap[levelKey]
+        : undefined;
     if (value === undefined) continue;
     let key: string;
     if (typeof value === "number") {
@@ -889,6 +874,36 @@ export function resolveByCorroboration(
     how: r.how,
     total: [...bucket.values()].reduce((s, b) => s + b.providers.length, 0),
     providers: r.winner.providers,
+  };
+}
+
+function resolveThinkingLevelMap(hits: readonly CatalogHit[], primary?: string): FieldResolution | undefined {
+  const levels = new Set<string>();
+  for (const hit of hits) {
+    const map = hit.entry.thinkingLevelMap;
+    if (map && typeof map === "object") for (const level of Object.keys(map)) levels.add(level);
+  }
+  if (!levels.size) return undefined;
+
+  const value: Record<string, string | null> = {};
+  const winningProviders = new Set<string>();
+  let total = 0;
+  let usedFallback = false;
+  for (const level of levels) {
+    // A missing key is silence. Explicit null is a vote.
+    const resolution = resolveByCorroboration(hits, `thinkingLevelMapKey:${level}`, undefined, primary);
+    if (!resolution) continue;
+    value[level] = resolution.value as string | null;
+    total += resolution.total;
+    for (const provider of resolution.providers) winningProviders.add(provider);
+    if (resolution.how !== "majority") usedFallback = true;
+  }
+  return {
+    value,
+    votes: winningProviders.size,
+    total,
+    how: usedFallback ? "openrouter fallback" : "majority",
+    providers: [...winningProviders],
   };
 }
 
@@ -1029,21 +1044,38 @@ export function resolveModel(
   const vendorProvider = vendorCatalogProvider(knowing, bare);
   const official = vendorProvider ? knowing.find((h) => h.provider === vendorProvider) : undefined;
   if (official) {
-    // Field by field, and only where the vendor actually speaks. A vendor
-    // catalog that says nothing about a field is silent, not empty: `nvidia`
-    // states an output ceiling for `nemotron-ultra` and no reasoning levels at
-    // all, and dropping the levels every other catalog states would be data
-    // loss dressed as authority.
+    // A vendor's explicit value is absolute for that field/key; silence falls
+    // through to corroboration. In a reasoning map every key is resolved
+    // independently, rather than letting a partial vendor map erase the rest.
     const entry: ModelEntry = {};
     for (const field of BUNDLED_FIELDS) {
+      if (field === "thinkingLevelMap") continue;
       if (official.entry[field] !== undefined && isPossibleValue(official.entry, field))
         (entry as Record<string, unknown>)[field] = official.entry[field];
     }
     const rest = knowing.filter((h) => h.provider !== official.provider);
     for (const field of BUNDLED_FIELDS) {
-      if (entry[field] !== undefined) continue;
+      if (field === "thinkingLevelMap" || entry[field] !== undefined) continue;
       const r = resolveByCorroboration(rest, field, undefined, primary);
       if (r) (entry as Record<string, unknown>)[field] = r.value;
+    }
+    const levels = new Set<string>();
+    for (const hit of knowing) {
+      const map = hit.entry.thinkingLevelMap;
+      if (map && typeof map === "object") for (const level of Object.keys(map)) levels.add(level);
+    }
+    if (levels.size) {
+      const map: Record<string, string | null> = {};
+      for (const level of levels) {
+        const officialMap = official.entry.thinkingLevelMap;
+        if (officialMap && Object.prototype.hasOwnProperty.call(officialMap, level)) {
+          map[level] = officialMap[level];
+          continue;
+        }
+        const r = resolveByCorroboration(rest, `thinkingLevelMapKey:${level}`, undefined, primary);
+        if (r) map[level] = r.value as string | null;
+      }
+      if (Object.keys(map).length) entry.thinkingLevelMap = map as ThinkingLevelMap;
     }
     return {
       entry,

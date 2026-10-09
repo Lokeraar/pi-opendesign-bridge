@@ -56,6 +56,18 @@ This bridge solves both sides at once: a **curated structure layer** (verified v
 
 ## 📋 Releases
 
+### 0.2.9 — vendor reasoning levels resolve key by key
+
+An official catalog can declare a partial `thinkingLevelMap`. That does not mean
+it owns levels it omitted. Each level now follows the same source rule as other
+fields: the vendor decides if it explicitly declares that level (including an
+explicit `null`); if it is silent, corroboration decides that key. A partial
+Anthropic map can therefore supply `max` without erasing `low` or `high` that
+other catalogs agree on. Added regression coverage for full official maps,
+partial official maps, and explicit vendor nulls.
+
+Tests: 47 passing, up from 40.
+
 ### 0.2.8 — the vendor's catalog decides, and agreement settles the rest
 
 The order that decides a model's values has changed, and it was worth getting

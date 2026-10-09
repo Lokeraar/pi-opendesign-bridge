@@ -39,22 +39,28 @@ window this is the only way to get it. To pin a release:
 pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.2.9
 ```
 
-> **Do not load two copies of this bridge.** Update the package from the source
-> it was originally installed from; do not switch sources with `pi update`, as Pi
-> may keep both packages:
+> **First check how the older copy was installed.** Pi can load an extension as
+> an installed package, or directly from a `.ts` file in `~/.pi/agent/extensions/`.
+> If both copies are present, both can register OpenDesign and conflict. Updating
+> a package does not remove a loose file.
+>
+> `pi list` shows installed packages. If this package is already listed from npm,
+> update it in place:
 >
 > ```bash
-> # If installed from npm:
 > pi update npm:@lokeraar/pi-opendesign-bridge
+> ```
 >
-> # If installed from git:
+> If `pi list` shows it was installed from git, update that same source instead:
+>
+> ```bash
 > pi update git:github.com/Lokeraar/pi-opendesign-bridge
 > ```
 >
-> If a loose `opendesign.ts` remains in `~/.pi/agent/extensions/`, remove it or
-> rename it outside `extensions/`, then restart Pi. A loose file and a package
-> can both register the provider; updating the package does not remove the loose
-> file. Use `pi list` to inspect installed packages.
+> **Do not run both commands.** Use the one that matches the source already
+> installed; switching sources can leave two package entries. If you also have
+> an old loose OpenDesign file in `~/.pi/agent/extensions/`, remove it or move it
+> outside that folder, then restart Pi.
 
 
 > 💛 If this bridge ever saved you from guessing a model's limits, a ⭐ on the

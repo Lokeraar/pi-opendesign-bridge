@@ -39,6 +39,23 @@ window this is the only way to get it. To pin a release:
 pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.2.9
 ```
 
+> **Do not load two copies of this bridge.** Update the package from the source
+> it was originally installed from; do not switch sources with `pi update`, as Pi
+> may keep both packages:
+>
+> ```bash
+> # If installed from npm:
+> pi update npm:@lokeraar/pi-opendesign-bridge
+>
+> # If installed from git:
+> pi update git:github.com/Lokeraar/pi-opendesign-bridge
+> ```
+>
+> If a loose `opendesign.ts` remains in `~/.pi/agent/extensions/`, remove it or
+> rename it outside `extensions/`, then restart Pi. A loose file and a package
+> can both register the provider; updating the package does not remove the loose
+> file. Use `pi list` to inspect installed packages.
+
 
 > 💛 If this bridge ever saved you from guessing a model's limits, a ⭐ on the
 > repo goes a long way — it is the only thing that helps somebody else find it.

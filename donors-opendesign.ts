@@ -118,6 +118,91 @@ export function bareName(id: string): string {
 }
 
 /**
+ * Reduce a model name to its letters and digits, lowercased.
+ *
+ * Two spellings of one model survive this: `deepseek-v4.1-flash` and
+ * `DeepSeek V4.1 Flash` both become `deepseekv41flash`. That is how the
+ * catalogs index a model by its human name — Pi's own vendor catalog writes
+ * `id: "deepseek-flash"` with `name: "DeepSeek V4.1 Flash"`, so the endpoint's
+ * id and that name are the same key once punctuation is gone.
+ *
+ * This is an exact match on a different field, not a similarity guess. That is
+ * what keeps it safe: `deepseek-v4-flash` and `deepseek-v4-flash-0731` stay
+ * apart because the date is in the name too, and `glm-5.3` never reaches
+ * `glm-5.3-flash` because each catalog holds them under separate keys.
+ */
+export function normaliseModelKey(s: string): string {
+  return s.toLowerCase().replace(/chat:/g, "").replace(/[^a-z0-9]+/g, "");
+}
+
+/**
+ * Catalog file names that differ from the vendor slug an id carries.
+ *
+ * OpenRouter writes `z-ai/glm-5.3`; the catalog that speaks for the vendor is
+ * `zai.json`. Without this the vendor's own catalog is never consulted and its
+ * numbers lose to the reseller's.
+ */
+export const VENDOR_CATALOG_ALIASES: Record<string, string> = {
+  "z-ai": "zai",
+  "~z-ai": "zai",
+  moonshot: "moonshotai",
+  "deepseek-ai": "deepseek",
+};
+
+/**
+ * Which catalog speaks for a model family: the vendor's own, never a reseller.
+ *
+ * This cannot be derived automatically. Every catalog stamps `provider` on its
+ * entries, but a reseller stamps its OWN name — `opencode.json` says
+ * `provider: opencode` on a `kimi-k3` it resells. What marks the real thing is
+ * that the vendor's catalog lists the model under its bare name
+ * (`kimi-k2.6`, `claude-fable-5`, `gpt-4`, `glm-5.2`, `mimo-v2.5`) while
+ * resellers carry a `vendor/` prefix. So it is recorded here, one line per
+ * family, the same way NAME_ALIASES records one fact per model.
+ *
+ * A model whose family is absent here has no vendor catalog to consult and
+ * falls through to the corroboration rule. That is not a gap to paper over:
+ * `qwen3.8-max` has no first-party catalog in Pi, and its levels are settled
+ * by agreement among the others.
+ */
+export const FAMILY_VENDOR: Record<string, string> = {
+  claude: "anthropic",
+  gpt: "openai",
+  o1: "openai",
+  o3: "openai",
+  o4: "openai",
+  chatgpt: "openai",
+  kimi: "moonshotai",
+  deepseek: "deepseek",
+  glm: "zai",
+  chatglm: "zai",
+  mimo: "xiaomi",
+  minimax: "minimax",
+  nemotron: "nvidia",
+  mistral: "mistral",
+  ministral: "mistral",
+  magistral: "mistral",
+};
+
+/**
+ * The family a model belongs to: the letters before its first digit.
+ *
+ * `kimi-k3` and `gpt-oss-120b` give `kimi` and `gpt`; `qwen3.8-max` gives
+ * `qwen`, not `qwen3`, so a version bump cannot move a model out of its family.
+ */
+export function modelFamily(bare: string): string {
+  const m = /^[a-z]+/i.exec(bare);
+  return m ? m[0].toLowerCase() : "";
+}
+
+/** The vendor's own catalog for this model, if one of them knows it. */
+export function vendorCatalogProvider(hits: readonly CatalogHit[], bare: string): string | undefined {
+  const wanted = FAMILY_VENDOR[modelFamily(bare)];
+  if (!wanted) return undefined;
+  return hits.some((h) => h.provider === wanted) ? wanted : undefined;
+}
+
+/**
  * EnClave sells a model under a short name; a catalog lists the same weights
  * under the dated slug the vendor publishes. These are the same model, so the
  * dated slug is looked up when the short one finds nothing.
@@ -504,6 +589,12 @@ export interface BundledCatalog {
   provider: string;
   /** bare name -> entry */
   models: Map<string, ModelEntry>;
+  /**
+   * Human name, punctuation-stripped -> entry. Optional so a catalog built by
+   * hand (in tests, or by an older caller) still works; lookups fall back to
+   * `models` when it is absent.
+   */
+  modelsByName?: Map<string, ModelEntry>;
 }
 
 /** Read one bundled catalog. The JSON is keyed by API, then by model id. */
@@ -518,6 +609,7 @@ export function readBundledCatalog(
     return undefined;
   }
   const models = new Map<string, ModelEntry>();
+  const modelsByName = new Map<string, ModelEntry>();
   for (const byApi of Object.values(raw)) {
     if (!byApi || typeof byApi !== "object") continue;
     for (const entry of Object.values(byApi)) {
@@ -527,9 +619,13 @@ export function readBundledCatalog(
       if (/free$/i.test(entry.id)) continue;
       const bare = bareName(entry.id);
       if (!models.has(bare)) models.set(bare, entry);
+      if (typeof entry.name === "string") {
+        const key = normaliseModelKey(entry.name);
+        if (key && !modelsByName.has(key)) modelsByName.set(key, entry);
+      }
     }
   }
-  return { provider, models };
+  return { provider, models, modelsByName };
 }
 
 /** The provider's own curated models, by bare name. Read-only, for tests and CLI. */
@@ -594,25 +690,14 @@ function readPiCatalogsUnsafe(agentDir: string, options: { exclude?: readonly st
   return out.sort((a, b) => rank(a.provider) - rank(b.provider) || a.provider.localeCompare(b.provider));
 }
 
-/**
-): BundledCatalog[] {
-  const dir = findBundledCatalogDir(agentDir);
-  if (!dir) return [];
-  const skip = new Set(options.exclude ?? []);
-  const out: BundledCatalog[] = [];
-  for (const provider of activeProviders(agentDir)) {
-    if (skip.has(provider)) continue;
-    const catalog = readBundledCatalog(dir, provider);
-    if (catalog && catalog.models.size) out.push(catalog);
-  }
-  // Strict order: the first provider that knows a model supplies its values.
-  // The hand-written layer is passed separately and always outranks these.
-  const rank = (p: string) => {
-    const i = PROVIDER_PRIORITY.indexOf(p as (typeof PROVIDER_PRIORITY)[number]);
-    return i === -1 ? PROVIDER_PRIORITY.length : i;
-  };
-  return out.sort((a, b) => rank(a.provider) - rank(b.provider) || a.provider.localeCompare(b.provider));
-}
+/*
+ * An earlier version resolved only the catalogs belonging to providers with a
+ * credential, which meant one of them decided alone. That is gone: Pi ships
+ * every catalog and reading a file needs no key, so all of them are read and
+ * the model name carries the weight instead. The body that used to live here is
+ * kept out of the file on purpose — leaving it inside a comment is how it came
+ * to be silently disabled in the first place.
+ */
 
 // ---------------------------------------------------------------------------
 // Resolving one model
@@ -646,6 +731,7 @@ export interface VendorSpec {
 
 export const VENDOR_SPEC: Record<string, VendorSpec> = {};
 
+
 export interface Resolved {
   entry: ModelEntry;
   /** The source that supplied the values, if any. */
@@ -670,6 +756,221 @@ const withinTolerance = (a: number, b: number) =>
  * agrees on its structure, but it never overrides a higher source. Nothing is
  * averaged.
  */
+/**
+ * Where a model's values come from, decided by corroboration.
+ *
+ * The catalog named after the model's own vendor is consulted first and speaks
+ * with the most weight; openrouter is consulted next; every other catalog
+ * corroborates. But a field is not settled by rank alone: the value the most
+ * catalogs agree on is the one that gets published. Rank is only the tiebreak.
+ *
+ * That ordering matters less than it looks, because the two agree most of the
+ * time. For `deepseek-v4.1-flash`, eight catalogs say `maxTokens: 384000` —
+ * the vendor's own first among them — and openrouter alone says 943718. The
+ * published ceiling followed openrouter and the endpoint rejected it.
+ *
+ * A value needs a simple majority of the catalogs that state the field at all.
+ * Three votes out of ten is not corroboration, it is a plurality, and a
+ * plurality does not overrule the vendor: without a majority the field falls
+ * back to the vendor's catalog, then to openrouter.
+ *
+ * Nothing is averaged. A number nobody published is not a consensus, it is an
+ * invention.
+ */
+
+/** Fields whose value is a property of THIS endpoint, not of the model. */
+export const ENDPOINT_FIELDS = ["contextWindow", "cost", "compat"] as const;
+
+/** Group values so 128_000 and 131_072 count as one number. */
+const sameNumber = (a: number, b: number) =>
+  Math.abs(a - b) <= ROUNDING_TOLERANCE * Math.max(Math.abs(a), Math.abs(b));
+
+/** Every catalog that knows the model, plus how the match was made. */
+export interface CatalogHit {
+  provider: string;
+  entry: ModelEntry;
+  matchedId: string;
+  /** Which field carried the match: the id, or the human name. */
+  via: "id" | "alias" | "name";
+}
+
+/**
+ * Find the model in one catalog: exact id first, then a dated alias, then the
+ * punctuation-stripped human name.
+ */
+export function findInCatalog(
+  catalog: BundledCatalog,
+  bare: string,
+  aliases: readonly string[] = [],
+): CatalogHit | undefined {
+  for (const name of [bare, ...aliases]) {
+    const entry = catalog.models.get(name);
+    if (entry) {
+      return { provider: catalog.provider, entry, matchedId: entry.id, via: name === bare ? "id" : "alias" };
+    }
+  }
+  const byName = catalog.modelsByName?.get(normaliseModelKey(bare));
+  if (byName) return { provider: catalog.provider, entry: byName, matchedId: byName.id, via: "name" };
+  return undefined;
+}
+
+/** What one field resolved to, and who said it. */
+export interface FieldResolution {
+  value: unknown;
+  votes: number;
+  total: number;
+  how: "majority" | "vendor fallback" | "openrouter fallback";
+  providers: string[];
+}
+
+/**
+ * Decide one field from every catalog that states it.
+ *
+ * `thinkingLevelMap` is decided key by key: a catalog that omits a level is
+ * silent about it, and silence must not erase what another one asserted. An
+ * explicit `null` is an assertion and counts as one.
+ */
+export function resolveByCorroboration(
+  hits: readonly CatalogHit[],
+  field: string,
+  vendorProvider?: string,
+  primary?: string,
+): FieldResolution | undefined {
+  if (field === "thinkingLevelMap") {
+    const perKey = new Map<string, Map<string, { value: unknown; providers: string[] }>>();
+    for (const hit of hits) {
+      const map = hit.entry.thinkingLevelMap;
+      if (!map || typeof map !== "object") continue;
+      for (const [level, value] of Object.entries(map)) {
+        if (!perKey.has(level)) perKey.set(level, new Map());
+        const bucket = perKey.get(level)!;
+        const key = JSON.stringify(value);
+        if (!bucket.has(key)) bucket.set(key, { value, providers: [] });
+        bucket.get(key)!.providers.push(hit.provider);
+      }
+    }
+    if (!perKey.size) return undefined;
+    const out: Record<string, unknown> = {};
+    let total = 0;
+    for (const [level, bucket] of perKey) {
+      const r = pick(bucket, vendorProvider, primary);
+      total += r.total;
+      out[level] = r.winner.value;
+    }
+    return { value: out, votes: 0, total, how: "majority", providers: [] };
+  }
+
+  const bucket = new Map<string, { value: unknown; providers: string[] }>();
+  for (const hit of hits) {
+    const value = hit.entry[field];
+    if (value === undefined) continue;
+    let key: string;
+    if (typeof value === "number") {
+      let found: string | undefined;
+      for (const existing of bucket.keys()) {
+        const prior = bucket.get(existing)!.value;
+        if (typeof prior === "number" && sameNumber(prior, value)) {
+          found = existing;
+          break;
+        }
+      }
+      key = found ?? String(value);
+    } else {
+      key = JSON.stringify(value);
+    }
+    if (!bucket.has(key)) bucket.set(key, { value, providers: [] });
+    bucket.get(key)!.providers.push(hit.provider);
+  }
+  if (!bucket.size) return undefined;
+  const r = pick(bucket, vendorProvider, primary);
+  return {
+    value: r.winner.value,
+    votes: r.winner.providers.length,
+    how: r.how,
+    total: [...bucket.values()].reduce((s, b) => s + b.providers.length, 0),
+    providers: r.winner.providers,
+  };
+}
+
+function pick(
+  bucket: Map<string, { value: unknown; providers: string[] }>,
+  vendorProvider?: string,
+  primary?: string,
+): { winner: { value: unknown; providers: string[] }; how: FieldResolution["how"]; total: number } {
+  const total = [...bucket.values()].reduce((s, b) => s + b.providers.length, 0);
+  const ranked = [...bucket.values()].sort((a, b) => b.providers.length - a.providers.length);
+  const best = ranked[0];
+  if (best.providers.length * 2 > total) {
+    return { winner: best, how: "majority", total };
+  }
+  // No majority. Rank decides, and the vendor's own catalog outranks the
+  // reseller's: a catalog maintained by the vendor records what the model
+  // implements, not what one gateway happens to accept.
+  if (vendorProvider) {
+    const vendor = ranked.find((b) => b.providers.includes(vendorProvider));
+    if (vendor) return { winner: vendor, how: "vendor fallback", total };
+  }
+  if (primary) {
+    const res = ranked.find((b) => b.providers.includes(primary));
+    if (res) return { winner: res, how: "openrouter fallback", total };
+  }
+  return { winner: best, how: "majority", total };
+}
+
+/**
+ * An approximate price, derived from the catalogs — never published.
+ *
+ * A price is a property of the reseller, not of the model: OpenRouter's price
+ * is what OpenRouter charges, and EnClave's is what EnClave charges. Voting on
+ * it would produce a number nobody charges, which is why `cost` is absent from
+ * BUNDLED_FIELDS and why the published block keeps the endpoint's own figure.
+ *
+ * What is useful is the SPREAD: the range the model is sold at across every
+ * catalog Pi ships. It answers "what order of magnitude is this" honestly,
+ * where a single average would answer it falsely. Ask for it explicitly.
+ */
+export interface CostRange {
+  input: { min: number; max: number };
+  output: { min: number; max: number };
+  /** How many catalogs stated a price at all. */
+  from: number;
+}
+
+export function estimateCostRange(hits: readonly CatalogHit[]): CostRange | undefined {
+  const inputs: number[] = [];
+  const outputs: number[] = [];
+  for (const hit of hits) {
+    const cost = hit.entry.cost;
+    if (!cost || typeof cost !== "object") continue;
+    if (typeof cost.input === "number") inputs.push(cost.input);
+    if (typeof cost.output === "number") outputs.push(cost.output);
+  }
+  if (!inputs.length && !outputs.length) return undefined;
+  const span = (xs: number[]) => (xs.length ? { min: Math.min(...xs), max: Math.max(...xs) } : { min: 0, max: 0 });
+  return { input: span(inputs), output: span(outputs), from: hits.length };
+}
+
+/**
+ * Whether a catalog's figure is a claim the model could actually honour.
+ *
+ * A ceiling that reaches the model's own declared window is not a statement
+ * about output: it leaves no room for the prompt that has to go with it. That
+ * is how some catalogs write the row — Moonshot's lists `kimi-k3` with
+ * `contextWindow: 1048576` and `maxTokens: 1048576`, both the same number —
+ * and publishing it would hand the endpoint an impossibility, which is the one
+ * failure mode the clamp below exists to prevent.
+ *
+ * Such a figure is treated as silence rather than as a claim, so the field
+ * falls through to the catalogs that state a ceiling a model can serve.
+ */
+export function isPossibleValue(entry: ModelEntry, field: string): boolean {
+  if (field !== "maxTokens") return true;
+  const max = entry.maxTokens;
+  const window = entry.contextWindow;
+  if (typeof max !== "number" || typeof window !== "number") return true;
+  return max < window;
+}
+
 export function resolveModel(
   bare: string,
   kept: ModelEntry | undefined,
@@ -677,58 +978,109 @@ export function resolveModel(
   isAlias: boolean,
 ): Resolved {
   // Aliases are left alone: the same bare name is a different thing in a
-  // different router, and its catalog numbers would be false here.
+  // different router, and its catalog numbers would be false here. This is the
+  // guard that keeps `auto` out of the corroboration count — with one catalog
+  // stating a value, a bare majority would otherwise hand it the field.
   if (isAlias) return { entry: {}, corroborating: [], rule: "none" };
 
   // The exact name first; a dated vendor slug only when the catalog does not
-  // know the short one.
-  const candidates = [bare, ...(NAME_ALIASES[bare] ?? [])];
+  // know the short one; the human name last, which is what connects an endpoint
+  // that says `deepseek-v4.1-flash` to a vendor catalog that says `deepseek-flash`.
+  const aliases = NAME_ALIASES[bare] ?? [];
   const knowing = bundled
-    .map((c) => {
-      for (const name of candidates) {
-        const entry = c.models.get(name);
-        if (entry) return { provider: c.provider, entry, matchedId: entry.id };
-      }
-      return undefined;
-    })
-    .filter((h): h is { provider: string; entry: ModelEntry; matchedId: string } => h !== undefined);
+    .map((c) => findInCatalog(c, bare, aliases))
+    .filter((h): h is CatalogHit => h !== undefined);
 
   // The primary donor is whichever catalog ranks first in PROVIDER_PRIORITY.
   const primary = bundled.length ? bundled[0].provider : undefined;
-  const donor = knowing.find((h) => h.provider === primary) ?? knowing[0];
-  const corroborating = knowing.filter((h) => h.provider !== donor?.provider).map((h) => h.provider);
 
   // 1. The vendor's own card, where one exists. Nothing outranks the model
-  //    card about the model.
+  //    card about the model, and it is not a vote: it is what the model does.
   const spec = VENDOR_SPEC[bare];
+  const anyDonor = knowing[0];
+
   if (spec) {
-    const entry: ModelEntry = donor ? copyFields(donor.entry, BUNDLED_FIELDS) : {};
+    const entry: ModelEntry = anyDonor ? copyFields(anyDonor.entry, BUNDLED_FIELDS) : {};
     if (spec.input) entry.input = spec.input;
     if (spec.maxTokens !== undefined) entry.maxTokens = spec.maxTokens;
     if (spec.thinkingLevelMap) entry.thinkingLevelMap = spec.thinkingLevelMap as ThinkingLevelMap;
-    if (!donor && kept) for (const f of HAND_FIELDS) if (kept[f] !== undefined) (entry as Record<string, unknown>)[f] = kept[f];
+    if (!anyDonor && kept) for (const f of HAND_FIELDS) if (kept[f] !== undefined) (entry as Record<string, unknown>)[f] = kept[f];
     return {
       entry,
       source: "model card",
-      matchedId: donor?.matchedId,
-      corroborating: corroborating.concat(donor ? [donor.provider] : []),
+      matchedId: anyDonor?.matchedId,
+      corroborating: knowing.map((h) => h.provider),
       rule: "vendor",
     };
   }
 
-  // 2. The primary donor decides every field it knows. It is a catalog whose
-  //    whole business is routing these models.
-  if (donor) {
+  // 2. The vendor's own catalog decides outright.
+  //
+  //    A catalog maintained by the vendor records what the model implements.
+  //    A reseller's records what ONE gateway happens to accept, and gateways
+  //    disagree: for `deepseek-v4.1-flash` eight catalogs say `maxTokens`
+  //    384000 — the vendor's first among them — and OpenRouter alone says
+  //    943718, a figure this endpoint rejects outright. So the vendor is not
+  //    one vote among many, it is the vote. If it says something the rest
+  //    disagree with, its number is still the one that gets published.
+  //
+  //    Only a model with no first-party catalog in Pi reaches the rule below,
+  //    where the value most catalogs agree on is what stands.
+  const vendorProvider = vendorCatalogProvider(knowing, bare);
+  const official = vendorProvider ? knowing.find((h) => h.provider === vendorProvider) : undefined;
+  if (official) {
+    // Field by field, and only where the vendor actually speaks. A vendor
+    // catalog that says nothing about a field is silent, not empty: `nvidia`
+    // states an output ceiling for `nemotron-ultra` and no reasoning levels at
+    // all, and dropping the levels every other catalog states would be data
+    // loss dressed as authority.
+    const entry: ModelEntry = {};
+    for (const field of BUNDLED_FIELDS) {
+      if (official.entry[field] !== undefined && isPossibleValue(official.entry, field))
+        (entry as Record<string, unknown>)[field] = official.entry[field];
+    }
+    const rest = knowing.filter((h) => h.provider !== official.provider);
+    for (const field of BUNDLED_FIELDS) {
+      if (entry[field] !== undefined) continue;
+      const r = resolveByCorroboration(rest, field, undefined, primary);
+      if (r) (entry as Record<string, unknown>)[field] = r.value;
+    }
     return {
-      entry: copyFields(donor.entry, BUNDLED_FIELDS),
-      source: donor.provider,
-      matchedId: donor.matchedId,
-      corroborating,
-      rule: corroborating.length ? "corroborated" : "donated",
+      entry,
+      source: official.provider,
+      matchedId: official.matchedId,
+      corroborating: knowing.filter((h) => h.provider !== official.provider).map((h) => h.provider),
+      rule: knowing.length > 1 ? "corroborated" : "donated",
     };
   }
 
-  // 3. No donor knows this model: what is already written stands. It may be a
+  // 3. No vendor catalog: the value the most catalogs agree on. A simple
+  //    majority of the catalogs that state the field at all. Three votes out of
+  //    ten is a plurality, not corroboration, and a plurality does not overrule
+  //    the reseller with the strongest claim: without a majority the field
+  //    falls back to OpenRouter.
+  if (knowing.length) {
+    const entry: ModelEntry = {};
+    let decided = 0;
+    for (const field of BUNDLED_FIELDS) {
+      const r = resolveByCorroboration(knowing, field, undefined, primary);
+      if (!r) continue;
+      (entry as Record<string, unknown>)[field] = r.value;
+      decided++;
+    }
+    if (decided) {
+      const corroborating = knowing.map((h) => h.provider);
+      return {
+        entry,
+        source: primary ?? knowing[0].provider,
+        matchedId: knowing.find((h) => h.provider === primary)?.matchedId ?? knowing[0].matchedId,
+        corroborating,
+        rule: corroborating.length > 1 ? "corroborated" : "donated",
+      };
+    }
+  }
+
+  // 4. No catalog states a field: what is already written stands. It may be a
   //    value measured against this endpoint, which no catalog can beat.
   if (kept) {
     return {
@@ -835,35 +1187,18 @@ export function overlayDonors(
     source = "model card";
   }
 
-  // 2. The primary donor decides every field it states.
-  const candidates = [bare, ...(NAME_ALIASES[bare] ?? [])];
-  const knowing = bundled
-    .map((c) => {
-      for (const name of candidates) {
-        const entry = c.models.get(name);
-        if (entry) return { provider: c.provider, entry };
-      }
-      return undefined;
-    })
-    .filter((h): h is { provider: string; entry: ModelEntry } => h !== undefined);
-
-  const primary = bundled.length ? bundled[0].provider : undefined;
-  const donor = knowing.find((h) => h.provider === primary) ?? knowing[0];
-  if (donor) {
-    take(donor.entry, BUNDLED_FIELDS);
-    source ??= donor.provider;
-    matchedId = donor.entry.id;
+  // 2. Everything else comes from the shared rule, so this bridge and its
+  //    sibling cannot drift apart: the vendor's own catalog first, then the
+  //    value most catalogs agree on, then what is already written. Keeping a
+  //    second copy of that logic here is how the two repos started disagreeing
+  //    about the same model.
+  const resolved = resolveModel(bare, undefined, bundled, false);
+  if (Object.keys(resolved.entry).length) {
+    take(resolved.entry, BUNDLED_FIELDS);
+    source ??= resolved.source;
+    matchedId ??= resolved.matchedId;
   }
-
-  // 3. The rest confirm the model and may fill a field nobody above stated.
-  const corroborating = knowing.filter((h) => h.provider !== donor?.provider).map((h) => h.provider);
-  for (const h of knowing) {
-    if (h.provider === donor?.provider) continue;
-    for (const field of BUNDLED_FIELDS) {
-      if (out[field] !== undefined) continue;
-      take(h.entry, [field]);
-    }
-  }
+  const corroborating = resolved.corroborating;
 
   for (const field of BUNDLED_FIELDS) {
     if (!before.has(field)) continue;

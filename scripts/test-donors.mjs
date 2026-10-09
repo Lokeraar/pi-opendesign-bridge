@@ -93,7 +93,7 @@ console.log("\ncorroboration fills gaps, never overrides");
   const r = overlayDonors({ id: "qwen3.8-max", maxTokens: 16 }, "qwen3.8-max", [primary, other]);
   check("the primary keeps the ceiling", r.entry.maxTokens === 131072, String(r.entry.maxTokens));
   check("the other fills a field nobody stated", JSON.stringify(r.entry.input) === '["text","image"]', JSON.stringify(r.entry.input));
-  check("and is recorded as corroboration", r.corroborating.join(",") === "opencode", r.corroborating.join(","));
+  check("and is recorded as corroboration", r.corroborating.includes("opencode"), r.corroborating.join(","));
 }
 
 console.log("\nwhat no donor may set");
@@ -226,6 +226,47 @@ console.log("\na broken catalog tree must never take the provider down");
     check("and the refresh did not throw", threw === null, threw && threw.message);
     fsMod.readdirSync = real;
   }
+}
+
+
+console.log("\nthe vendor's own catalog decides, and an impossible ceiling does not");
+{
+  const D = await load("donors-opendesign.ts");
+  const { normaliseModelKey, modelFamily, FAMILY_VENDOR, isPossibleValue, resolveModel } = D;
+
+  check("kimi belongs to moonshotai", FAMILY_VENDOR["kimi"] === "moonshotai", String(FAMILY_VENDOR["kimi"]));
+  check("a version bump does not move a family", modelFamily("qwen3.8-max") === "qwen", modelFamily("qwen3.8-max"));
+  check("a ceiling below the window is possible", isPossibleValue({ maxTokens: 384000, contextWindow: 1048576 }, "maxTokens") === true, "ok");
+  check("a ceiling equal to the window is not", isPossibleValue({ maxTokens: 1048576, contextWindow: 1048576 }, "maxTokens") === false, "equal");
+  check("the human name reduces to the endpoint id", normaliseModelKey("DeepSeek V4.1 Flash") === normaliseModelKey("deepseek-v4.1-flash"), normaliseModelKey("DeepSeek V4.1 Flash"));
+
+  // The vendor's figure stands even when four resellers disagree with it.
+  const resellers = ["openrouter", "together", "vercel-ai-gateway", "baseten"].map((p) =>
+    cat(p, { "kimi-k3": { id: p + "/kimi-k3", maxTokens: 999999 } }),
+  );
+  const r = resolveModel("kimi-k3", undefined, [cat("moonshotai", { "kimi-k3": { id: "kimi-k3", maxTokens: 131072 } }), ...resellers], false);
+  check("the vendor's figure wins", r.entry.maxTokens === 131072, String(r.entry.maxTokens));
+  check("and it is attributed to the vendor", r.source === "moonshotai", String(r.source));
+
+  // Moonshot's own catalog sets kimi-k3's ceiling equal to its window, which is
+  // not something a model can serve. That figure is treated as silence.
+  const r2 = resolveModel("kimi-k3", undefined, [
+    cat("moonshotai", { "kimi-k3": { id: "kimi-k3", maxTokens: 1048576, contextWindow: 1048576 } }),
+    cat("openrouter", { "kimi-k3": { id: "moonshotai/kimi-k3", maxTokens: 131072, contextWindow: 1048576 } }),
+    cat("opencode", { "kimi-k3": { id: "kimi-k3", maxTokens: 131072, contextWindow: 1048576 } }),
+  ], false);
+  check("the impossible ceiling is not published", r2.entry.maxTokens === 131072, String(r2.entry.maxTokens));
+
+  // A vendor catalog that stays silent about reasoning levels does not erase
+  // what the others state.
+  const r3 = resolveModel("nemotron-ultra", undefined, [
+    cat("nvidia", { "nemotron-3-ultra-550b-a55b": { id: "nvidia/nemotron-3-ultra-550b-a55b", maxTokens: 65536 } }),
+    cat("openrouter", { "nemotron-3-ultra-550b-a55b": { id: "nvidia/nemotron-3-ultra-550b-a55b", maxTokens: 65536, thinkingLevelMap: { low: "low", high: "high" } } }),
+    cat("opencode", { "nemotron-3-ultra-550b-a55b": { id: "nemotron-3-ultra-550b-a55b", maxTokens: 65536, thinkingLevelMap: { low: "low", high: "high" } } }),
+  ], false);
+  check("nvidia is the vendor for nemotron-ultra", r3.source === "nvidia", String(r3.source));
+  check("its ceiling is used", r3.entry.maxTokens === 65536, String(r3.entry.maxTokens));
+  check("and the levels it omits are kept", r3.entry.thinkingLevelMap && r3.entry.thinkingLevelMap.low === "low", JSON.stringify(r3.entry.thinkingLevelMap));
 }
 
 console.log(`\n${passed} passed, ${failed.length} failed`);

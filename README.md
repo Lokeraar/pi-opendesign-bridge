@@ -56,6 +56,48 @@ This bridge solves both sides at once: a **curated structure layer** (verified v
 
 ## 📋 Releases
 
+### 0.2.8 — the vendor's catalog decides, and agreement settles the rest
+
+The order that decides a model's values has changed, and it was worth getting
+wrong twice before it was right.
+
+**The vendor's own catalog now decides.** For `deepseek-v4.1-flash`, eight
+catalogs say `maxTokens` 384000 — DeepSeek's own first among them — and
+openrouter alone says 943718, a figure amr-link rejects. The published ceiling
+followed openrouter, so it was wrong. A catalog the vendor maintains records
+what the model implements; a reseller's records what one gateway accepts, and
+gateways disagree.
+
+**Models are matched to their vendor by family**: `kimi` → moonshotai,
+`claude` → anthropic, `gpt` → openai, `glm` → zai, `deepseek` → deepseek,
+`mimo` → xiaomi, `nemotron` → nvidia. It cannot be derived automatically —
+every catalog stamps `provider` on its entries, but a reseller stamps its own
+name on a model it resells — so it is data, one line per family.
+
+**When there is no vendor catalog, the value most catalogs agree on stands.**
+`qwen3.8-max` has no first-party catalog in Pi. It now publishes
+`minimal: null` and `high: null`, which is exactly what amr-link accepts:
+`low`, `medium` and `xhigh` work; `minimal`, `off` and `high` return
+`502 ... provider returned HTTP 400`. The rule found that without being told.
+
+**A ceiling that reaches the model's own window is treated as silence.**
+Moonshot lists `kimi-k3` with `contextWindow: 1048576` and `maxTokens: 1048576`
+— the same number twice. A ceiling equal to the window leaves no room for the
+prompt, so it cannot describe output; the field falls through to the catalogs
+that state a ceiling a model can serve, and `kimi-k3` stays at 131072.
+
+**A model is found by its human name as well as its id.** DeepSeek's catalog
+writes `id: "deepseek-flash"` with `name: "DeepSeek V4.1 Flash"`, so the
+endpoint's id and that name are one key once punctuation is stripped. This is
+an exact match on a different field, not a similarity guess: dated variants
+stay apart because the date is in the name too.
+
+**`cost` is still never published from a catalog**, and never will be — a
+price belongs to a reseller, so averaging prices from several would produce a
+number nobody charges. What is available instead is a range, asked for
+explicitly, showing the spread across every catalog.
+
+
 ### 0.2.5 — a broken catalog tree no longer takes the provider down
 
 Pi refreshes every provider in one batch. An exception thrown while looking for
@@ -252,13 +294,48 @@ id that matched is recorded with its prefix, so a match can be audited:
 ### The order
 
 ```
-the vendor's own model card  >  openrouter  >  the other 41 catalogs
+the vendor's own model card
+  > the catalog named after the model's vendor
+  > the value most catalogs agree on
+  > openrouter
+  > what is already written
 ```
 
-**openrouter decides every field it states.** It is the largest model router in
-the world and the catalog is its core business. The other catalogs confirm that a
-model exists and may fill a field nobody above stated; they never override.
-Nothing is averaged.
+**The vendor's own catalog decides, and it is not one vote among many.** A
+catalog the vendor maintains records what the model implements. A reseller's
+records what one gateway happens to accept, and gateways disagree: for
+`deepseek-v4.1-flash`, eight catalogs say `maxTokens` 384000 — DeepSeek's own
+first among them — while openrouter alone says 943718, a figure this endpoint
+rejects. So when the vendor's number differs from everybody else's, the
+vendor's number is the one published.
+
+**A model is matched to its vendor by family**, not by guessing: `kimi` belongs
+to Moonshot, `claude` to Anthropic, `gpt` to OpenAI, `glm` to zai, `deepseek` to
+DeepSeek. This cannot be derived automatically — every catalog stamps
+`provider` on its entries, but a reseller stamps its own name on a model it
+resells. So it is recorded as data, one line per family, the same way the dated
+model aliases are recorded.
+
+**When there is no vendor catalog, agreement decides.** A model like
+`qwen3.8-max` has no first-party catalog in Pi, and there the value most
+catalogs agree on is what stands. It needs a simple majority of the catalogs
+that state the field: three votes out of ten is a plurality, not corroboration,
+and a plurality falls back to openrouter. Nothing is averaged — a number nobody
+published is not a consensus, it is an invention.
+
+**A ceiling that reaches the model's own window is treated as silence.** Some
+catalogs write the row that way: Moonshot lists `kimi-k3` with
+`contextWindow: 1048576` and `maxTokens: 1048576`, the same number twice. A
+ceiling equal to the window leaves no room for the prompt that goes with it, so
+it cannot be a statement about output, and the field falls through to the
+catalogs that state a ceiling a model can serve.
+
+**A model is found by its human name as well as its id.** Pi's vendor catalog
+writes `id: "deepseek-flash"` with `name: "DeepSeek V4.1 Flash"`, so the id the
+endpoint uses and that name are the same key once punctuation is stripped. This
+is an exact match on a different field, not a similarity guess, which is what
+keeps it safe: `deepseek-v4-flash` and `deepseek-v4-flash-0731` stay apart
+because the date is in the name too, and `glm-5.3` never reaches `glm-5.3-flash`.
 
 ### An explicit `null` is a claim; an absent key is silence
 

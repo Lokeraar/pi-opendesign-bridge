@@ -1,5 +1,5 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version: 0.2.5](https://img.shields.io/badge/version-0.2.5-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
+[![Version: 0.2.9](https://img.shields.io/badge/version-0.2.9-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
 
 # @lokeraar/pi-opendesign-bridge
 
@@ -36,7 +36,7 @@ testing something specific, or a fix has not been published yet — during that
 window this is the only way to get it. To pin a release:
 
 ```bash
-pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.2.7
+pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.2.9
 ```
 
 
@@ -131,18 +131,17 @@ the separator is a backslash, so the pick was arbitrary there.
 
 ### 0.2.4 — catalogs from a flat install too
 
-The catalogs can sit at three places depending on how Pi was installed, and only
-the two with a `dist` were being read:
+The catalogs can sit at three places depending on how Pi was installed:
 
 ```
-<global>/…/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/data
+<active Pi package>/node_modules/@earendil-works/pi-ai/dist/providers/data
 <agent>/npm/node_modules/.pnpm/@earendil-works+pi-ai@…/node_modules/…/pi-ai/dist/providers/data
 <agent>/npm/node_modules/@earendil-works/pi-ai/providers/data
 ```
 
-The third is what a flat install gives you: no `.pnpm`, and no `dist` either. The
-lookup found nothing on those machines, so every model fell back to its defaults
-— no context window, no ceiling, no reasoning levels.
+The active Pi package is discovered at runtime. Its exact path differs across
+Termux, Windows, global prefixes, local installs and package managers. The store
+and flat layouts are fallbacks, not assumptions about how Pi was installed.
 
 Two bugs fixed alongside it. The sibling roots were built from
 `dirname(agentDir)` as if that were the home directory, which for
@@ -194,15 +193,21 @@ that matched is recorded with its prefix:
 }}
 ```
 
-Precedence: **the vendor's model card > openrouter > the other 41**. openrouter
-decides every field it states; the rest confirm and may fill a field nobody
-above stated. Nothing is averaged.
+Precedence is per field: hand-written model card > the official vendor catalog
+> a simple majority among catalogs that state the field (only when no vendor
+catalog exists) > openrouter fallback (when there is no vendor or majority) >
+what is already written when nobody states the field. The vendor's catalog is
+absolute for the values it states; it is not one vote among resellers. Nothing
+is averaged.
 
-An explicit `null` in a catalog is a **claim** and is applied. An absent key is
-**silence** and does not erase what is known — which is why a thinking map is
-merged key by key. openrouter lists `kimi-k2.7-code` with one key and the
-`mimo-v2.6-*` models with none; a wholesale replace would have deleted eight
-working reasoning levels.
+An explicit `null` in a catalog is a **claim**; an absent key is **silence**.
+For `thinkingLevelMap`, every level resolves independently: the vendor's
+explicit value wins, including `null`; a vendor-omitted level falls through to
+the remaining catalogs and their majority. A reseller's partial map cannot erase
+vendor-declared levels, and a partial vendor map can be completed from
+corroboration. `contextWindow` belongs to the endpoint and is never overwritten.
+`cost` is excluded from published donor values because prices belong to
+resellers; the module can provide an approximate range for inspection instead.
 
 Also in this release:
 
@@ -284,13 +289,23 @@ Values do not only come from hand-curating. Pi ships a catalog per provider in
 its own package, and this bridge reads them:
 
 ```
-<pi-ai>/dist/providers/data/<provider>.json      42 of them
+<active Pi package>/node_modules/@earendil-works/pi-ai/dist/providers/data/<provider>.json
 ```
 
 No credential is needed to read them — a key is only needed to *call* an API.
-Matching is on the **bare model name**, so `deepseek-v4-flash` finds
-`deepseek/deepseek-v4-flash`, with the prefix stripped on both sides. The exact
-id that matched is recorded with its prefix, so a match can be audited:
+The active Pi package is discovered at runtime; its path varies by operating
+system, prefix and installation method, so this is a layout description, not a
+hardcoded path. Agent-local store and flat-install layouts are fallbacks. Pi
+currently ships 42 catalogs in this location; the set updates with the installed
+Pi version. Restart Pi or refresh the provider after upgrading to use them.
+
+Matching uses an exact normalized key from either the model id or its human
+`name`: `deepseek-v4.1-flash` therefore finds DeepSeek's entry whose id is
+`deepseek-flash` and whose name is `DeepSeek V4.1 Flash`. Vendor prefixes are
+removed from ids, while punctuation and spaces in the name are normalized. This
+is not fuzzy similarity; dated variants stay distinct because their names
+include the date. The exact id that matched is recorded with its prefix, so a
+match can be audited:
 
 ```json
 "provenance": {
@@ -349,20 +364,18 @@ is an exact match on a different field, not a similarity guess, which is what
 keeps it safe: `deepseek-v4-flash` and `deepseek-v4-flash-0731` stay apart
 because the date is in the name too, and `glm-5.3` never reaches `glm-5.3-flash`.
 
-### An explicit `null` is a claim; an absent key is silence
+### Claims and silence are resolved per key
 
-This is the distinction the whole thing hangs on.
+An explicit vendor value — including `null` — is authoritative for that
+thinking level. A key the vendor omits is silence, and only that key falls
+through to the remaining catalogs and their majority rule. This prevents a
+reseller's partial map from erasing levels the vendor declared, and lets a
+partial official map be completed through corroboration.
 
-A catalog that writes `"minimal": null` is **claiming** the model does not accept
-that effort level, and the claim wins. `openrouter` does exactly this for the
-DeepSeek family, which is why `deepseek-v4-flash` drops from seven levels to
-three here.
-
-A catalog that leaves the key out has said **nothing**, and saying nothing must
-not erase what we know. `openrouter` lists `kimi-k2.7-code` with a single key and
-`mimo-v2.6-*` with none, so a thinking map is merged **key by key**: a one-key
-map cannot delete a seven-key one. Without that, two models would silently lose
-their reasoning levels to a gap in the catalog.
+`contextWindow` belongs to the endpoint and is never overwritten by a donor.
+`cost` is excluded from published donor values because a catalog's price is
+for a different reseller. The donor module can show an approximate min/max range
+for inspection, but does not publish it as OpenDesign's price.
 
 ### What no donor may set
 
@@ -466,33 +479,29 @@ Three things worth reading:
 - **`faltantes`** compares what your key is served against what is published. A
   non-empty line is the subscription-tier problem: the endpoint has models the
   extension is not showing, and they have to be added by hand.
-- The catalog is searched by **content**: any package containing
-  `dist/providers/data/*.json` counts, whatever it is named. That is not a
-  preference. Pi installs the same catalogs under different package names
-  depending on the version and the launcher, so a lookup keyed on the name
-  reports "no donor" on every layout but its own.
-- The store is searched under the running agent directory **and its siblings**,
-  so a wrapper that relocates it resolves too. Reporters on Pi 1.0.1 through
-  `gentle-shell` — which installs into `~/.gentle-shell/agent` — were seeing
-  neither their tier's models nor any inherited values, because the lookup
-  returned nothing and every model fell back to its defaults. It also descends
-  into store entries, which sit directly under the store root rather than under a
-  `node_modules`, so a walk that looks only there sees an empty store.
+- The primary catalog path is discovered from Pi's active installation at
+  runtime. Its concrete path varies across operating systems, prefixes,
+  installation methods and launchers; it is not hardcoded to this device.
+- If the active Pi package is not found, supported agent-local store and
+  flat-install layouts are searched as fallbacks. The store is searched under
+  the running agent directory **and its siblings**, so a wrapper that relocates
+  it resolves too. Pnpm store entries sit directly under the store root rather
+  than under a nested `node_modules`, so the fallback walk accounts for that.
 
-### Three shapes, one lookup
+### Runtime discovery, with fallbacks
 
-Where the catalogs live depends on how Pi was installed, and all three are
-searched:
+The bridge first discovers the `pi-ai` catalogs belonging to the active Pi
+installation. For example, a global npm installation may place them at:
 
 ```
-<global>/…/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/data
-<agent>/npm/node_modules/.pnpm/@earendil-works+pi-ai@…/node_modules/…/pi-ai/dist/providers/data
-<agent>/npm/node_modules/@earendil-works/pi-ai/providers/data        flat, no build
+<active Pi package>/node_modules/@earendil-works/pi-ai/dist/providers/data
 ```
 
-The third is what teams installing Pi directly under the agent directory get:
-no `.pnpm`, and no `dist` either. OpenRouter is read from whichever location is
-found first, and the rest of that location corroborate.
+That is a layout, not a hardcoded path: Termux, Windows, a local install, a
+custom prefix, or another package manager may place Pi elsewhere. If the active
+package is not found, the bridge searches the agent-local pnpm store and flat
+install layout as fallbacks. The directory actually found is reported by the
+diagnose script.
 
 The two scan results are printed separately on purpose: the first is what the
 extension does, the second is what a broader search could find. When they differ,

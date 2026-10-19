@@ -1,5 +1,5 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
+[![Version: 0.3.1](https://img.shields.io/badge/version-0.3.1-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
 
 # @lokeraar/pi-opendesign-bridge
 
@@ -49,7 +49,7 @@ testing something specific, or a fix has not been published yet — during that
 window this is the only way to get it. To pin a release:
 
 ```bash
-pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.3.0
+pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.3.1
 ```
 
 > **First check how the older copy was installed.** Pi can load an extension as

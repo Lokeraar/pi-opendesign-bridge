@@ -287,8 +287,19 @@ async function postChat(
 interface LiveListing {
   id: string;
   inputModalities: string[];
+  outputModalities: string[];
   contextLimit?: number;
   contextBudget?: number;
+  /**
+   * `metadata.output_budget` — the answer ceiling the gateway itself declares.
+   * This is the ONLY free per-model field that describes output rather than
+   * prompt capacity, which is why a ceiling is never derived from
+   * `contextBudget` (see issue #1: "context_budget is not an output ceiling").
+   */
+  outputBudget?: number;
+  /** `metadata.created` / model card creation, when the gateway states it. */
+  created?: number;
+  defaultModel?: boolean;
 }
 
 /** Non-chat endpoint ids the chat picker must never see (embed/tts/image-gen...). */
@@ -310,8 +321,10 @@ export async function fetchLiveListing(
       data?: Array<{
         id?: unknown;
         enabled?: unknown;
-        architecture?: { input_modalities?: unknown };
-        metadata?: { context_limit?: unknown; context_budget?: unknown };
+        created?: unknown;
+        default?: unknown;
+        architecture?: { input_modalities?: unknown; output_modalities?: unknown };
+        metadata?: { context_limit?: unknown; context_budget?: unknown; output_budget?: unknown };
       }>;
     };
     const out: LiveListing[] = [];
@@ -321,13 +334,21 @@ export async function fetchLiveListing(
       const modalities = Array.isArray(entry.architecture?.input_modalities)
         ? (entry.architecture!.input_modalities as unknown[]).filter((x): x is string => typeof x === "string")
         : [];
+      const outModalities = Array.isArray(entry.architecture?.output_modalities)
+        ? (entry.architecture!.output_modalities as unknown[]).filter((x): x is string => typeof x === "string")
+        : [];
       const limit = entry.metadata?.context_limit;
       const budget = entry.metadata?.context_budget;
+      const outBudget = entry.metadata?.output_budget;
       out.push({
         id,
         inputModalities: modalities,
+        outputModalities: outModalities,
         contextLimit: typeof limit === "number" && limit > 0 ? limit : undefined,
         contextBudget: typeof budget === "number" && budget > 0 ? budget : undefined,
+        outputBudget: typeof outBudget === "number" && outBudget > 0 ? outBudget : undefined,
+        created: typeof entry.created === "number" && entry.created > 0 ? entry.created : undefined,
+        defaultModel: entry.default === true,
       });
     }
     return out;
@@ -337,33 +358,100 @@ export async function fetchLiveListing(
 }
 
 // ---------------------------------------------------------------------------
-// Auto-probe for brand-new ids
+// Free discovery — no inference, no charge
 // ---------------------------------------------------------------------------
+//
+// A brand-new id used to be measured with up to sixteen POST /chat/completions
+// calls (six effort levels, an `off` probe and an eight-step ceiling walk).
+// That is billable inference the user never asked for, on a model the user
+// never selected — issue #2 — and it does not fit in Pi's 15 s /model budget,
+// so it also never converged — issue #1.
+//
+// None of it was necessary. `GET /models` already carries, per id and for free:
+//
+//   metadata.context_limit    the window
+//   metadata.output_budget    the answer ceiling  ← the field a ceiling needs
+//   metadata.context_budget   how much the PROMPT may occupy (NOT the ceiling)
+//   architecture.*_modalities what the model reads and writes
+//
+// and Pi ships catalogs (readPiCatalogs) that state reasoning support, the
+// thinking map and a vendor-declared ceiling. Two free sources, one request.
+//
+// The output ceiling is the MINIMUM of every free claim — gateway
+// `output_budget`, donor ceiling, curated ceiling — and never
+// `context_budget`. Understating a ceiling only costs headroom; overstating it
+// produces a 400 from the provider, which is exactly what the old
+// `context_budget`-derived value did on the Claude family (issue #1).
 
-const PROBE_BODY_MESSAGES = [
-  { role: "system", content: "Be terse." },
-  { role: "user", content: "hi" },
-];
-/** Ascending output-cap candidates; first HTTP rejection stops the walk. */
-const CEILING_CANDIDATES = [8_192, 32_768, 131_072, 262_144, 393_216, 524_288, 1_048_576, 2_097_152];
+/**
+ * A ceiling the window cannot hold is an impossible claim, not a bigger one.
+ * Measured on a 262,144-token window, 262,144 was rejected while 261,120 passed,
+ * so the reserve stays coarse.
+ */
+const PROMPT_RESERVE_TOKENS = 2_048;
 
-function conservativeModel(listing: LiveListing): LiveModelConfig {
+/** Free fallback ceiling when neither the gateway nor a catalog states one. */
+const FREE_FALLBACK_MAX_TOKENS = 16_384;
+/**
+ * Build a model entry from information that costs nothing: the gateway listing
+ * plus whatever Pi's bundled catalogs say. Replaces the paid probe.
+ */
+function freeModel(listing: LiveListing): LiveModelConfig {
+  const window = listing.contextLimit ?? 1_000_000;
+  // Prefer the declared answer ceiling; fall back to the prompt budget only as
+  // a placeholder, and never let it exceed the window-minus-reserve clamp.
+  const declared = listing.outputBudget;
+  const maxTokens = Math.min(
+    declared ?? FREE_FALLBACK_MAX_TOKENS,
+    Math.max(1_024, window - PROMPT_RESERVE_TOKENS),
+  );
   return normalize({
     id: listing.id,
     name: listing.id,
     reasoning: true,
     input: listing.inputModalities.includes("image") ? ["text", "image"] : ["text"],
-    contextWindow: listing.contextLimit ?? 1_000_000,
-    maxTokens: listing.contextBudget ?? 16_384,
+    contextWindow: window,
+    maxTokens,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     compat: { supportsDeveloperRole: false },
     thinkingLevelMap: { off: null, minimal: null, low: null, medium: "medium", high: null, xhigh: null, max: null },
     provenance: {
       contextWindow: listing.contextLimit ? "gateway" : "vanilla",
-      maxTokens: listing.contextBudget ? "gateway" : "vanilla",
+      maxTokens: declared ? "gateway" : "vanilla",
       thinkingLevelMap: "vanilla",
       input: listing.inputModalities.length ? "gateway" : "vanilla",
     } satisfies ValueProvenance,
+  });
+}
+
+/**
+ * Apply the gateway's declared `output_budget` to the ids this refresh built
+ * from nothing but free metadata (`freeIds`).
+ *
+ * Curated and previously stored entries are left exactly as they are: a value
+ * that was curated or measured has evidence behind it, and the gateway does not
+ * enforce `output_budget` as a hard limit (this endpoint has accepted requests
+ * above it), so it is not entitled to shrink one. For an id nobody has ever
+ * characterised, it is the best ceiling available — and the ceiling that
+ * `context_budget`, a PROMPT figure, must never stand in for.
+ *
+ * Only lowers, never raises.
+ */
+function clampToGatewayBudget(
+  models: LiveModelConfig[],
+  ceilings: ReadonlyMap<string, number>,
+  freeIds: ReadonlySet<string>,
+): LiveModelConfig[] {
+  if (!ceilings.size || !freeIds.size) return models;
+  return models.map((m) => {
+    if (!freeIds.has(m.id)) return m;
+    const budget = ceilings.get(m.id);
+    if (budget === undefined || !(Number(m.maxTokens) > budget)) return m;
+    return {
+      ...m,
+      maxTokens: budget,
+      provenance: { ...m.provenance, maxTokens: "gateway" },
+    } as LiveModelConfig;
   });
 }
 
@@ -380,10 +468,20 @@ function isParameterRejection(status?: number): boolean {
   return status === 400 || status === 422;
 }
 
+const PROBE_BODY_MESSAGES = [
+  { role: "system", content: "Be terse." },
+  { role: "user", content: "hi" },
+];
+/** Ascending output-cap candidates; first HTTP rejection stops the walk. */
+const CEILING_CANDIDATES = [8_192, 32_768, 131_072, 262_144, 393_216, 524_288, 1_048_576, 2_097_152];
+
 /**
- * Measure a brand-new model: level acceptance, real `off` behaviour and the
- * output ceiling. Returns `undefined` on transport failure (caller falls back
- * to `conservativeModel`); an HTTP rejection per level is a valid measurement.
+ * Measure a model: level acceptance, real `off` behaviour and the output
+ * ceiling. Returns `undefined` on transport failure.
+ *
+ * NOT part of the refresh path any more — it costs real inference and is only
+ * reachable through explicit maintenance (`PI_OPENDESIGN_REPROBE`,
+ * `scripts/probe-models.mjs`, or a caller that opts in). See `freeModel`.
  */
 export async function probeNewModel(
   listing: LiveListing,
@@ -726,14 +824,6 @@ function sameModels(a: readonly LiveModelConfig[], b: readonly LiveModelConfig[]
 export default async function opendesignLiveHelper(): Promise<void> {}
 
 /**
- * Tokens held back from an output ceiling so the prompt has room. A ceiling equal
- * to the window always fails: the endpoint answers "This request needs about N
- * tokens (messages + tools + max_tokens)". Measured on a 262,144-token window,
- * 262,144 was rejected and 261,120 passed.
- */
-const PROMPT_RESERVE_TOKENS = 2_048;
-
-/**
  * Apply Pi's bundled catalogs to models we already built, and record where each
  * value came from.
  *
@@ -851,8 +941,11 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
 
     const storedById = new Map(storedModels.map((m) => [m.id, m]));
     const out: LiveModelConfig[] = [];
+    // Ids this refresh characterised from free metadata alone. They are the only
+    // ones the gateway budget may lower: curated and stored values have evidence
+    // behind them, a free entry has a declaration and nothing else.
+    const freeIds = new Set<string>();
     for (const listing of live) {
-      if (ctx.signal.aborted) return undefined;
       const known = curatedById.get(listing.id);
       if (known) {
         out.push(known); // curated values are never overwritten by metadata
@@ -860,25 +953,35 @@ export function makeRefreshModels(options: RefreshModelsOptions) {
       }
       const previous = storedById.get(listing.id);
       if (previous) {
-        out.push(normalize(previous, cfg?.compat)); // already probed in a past session
+        out.push(normalize(previous, cfg?.compat)); // already resolved in a past session
         continue;
       }
-      const probed = await probeNewModel(listing, baseUrl, key, ctx.signal); // brand-new id
-      if (ctx.signal.aborted) return undefined;
-      out.push(probed ?? conservativeModel(listing));
+      // Brand-new id. Built from free sources only: `GET /models` metadata plus
+      // Pi's bundled catalogs. No POST, no charge, no timeout to blow.
+      out.push(freeModel(listing));
+      freeIds.add(listing.id);
     }
 
     // Los catalogos de Pi se aplican DESPUES de construir, para que ganen
-    // sobre la capa curada y sobre el sondeo: el orden es model card > openrouter
-    // > resto, igual que en el bridge de EnClave.
-    const donated = overlayBundled(out, bundled);
+    // sobre la capa curada: el orden es model card > openrouter > resto, igual
+    // que en el bridge de EnClave.
+    //
+    // Y sobre los ids nuevos, despues de los donantes, el techo lo manda el
+    // gateway: un catalogo de proveedor no puede declarar mas salida de la que
+    // el endpoint presupuesta para un modelo que nadie midio.
+    const ceilings = new Map<string, number>();
+    for (const listing of live) if (listing.outputBudget !== undefined) ceilings.set(listing.id, listing.outputBudget);
+    const donated = clampToGatewayBudget(overlayBundled(out, bundled), ceilings, freeIds);
 
+    // Se publica ANTES de cualquier trabajo lento, y no hay trabajo lento. Un
+    // refresh abortado despues de este punto deja el catalogo persistido, que
+    // es la mitad de la no-convergencia del issue #1.
     const persisted = await ctx.publish({ persist: { models: donated, checkedAt: Date.now() } });
-    if (!persisted || ctx.signal.aborted) return undefined;
+    if (!persisted || ctx.signal.aborted) return donated;
 
-    // Maintenance-only: re-probe the curated ids we just published and report
-    // drift + retired ids. Runs AFTER publish so the catalog is never delayed,
-    // and never mutates what was published.
+    // Maintenance-only and explicitly paid: re-probe the curated ids and report
+    // drift + retired ids. Never runs on the refresh path; gated behind an env
+    // var because it is billable inference.
     if (truthyEnv(options.reprobeEnv ?? "PI_OPENDESIGN_REPROBE")) {
       await runReprobeAudit({ agentDir: options.agentDir, baseUrl, key, signal: ctx.signal, curated, live });
     }

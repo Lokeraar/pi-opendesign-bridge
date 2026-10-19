@@ -1,5 +1,5 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version: 0.2.9](https://img.shields.io/badge/version-0.2.9-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
+[![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://www.npmjs.com/package/@lokeraar/pi-opendesign-bridge)
 
 # @lokeraar/pi-opendesign-bridge
 
@@ -19,7 +19,8 @@ OpenDesign's own `/models` address answers with ids and coarse metadata only —
 reasoning levels, no real output ceiling. Without those, Pi falls back to generic
 guesses. This bridge fills the gap: after `/login opendesign`, the models your key
 can actually use appear in `/model` **with their real structure** instead of
-defaults that merely look plausible.
+defaults that merely look plausible — and **without spending a single paid
+inference request** to discover them.
 
 > 📦 Page: [pi.dev/packages/@lokeraar/pi-opendesign-bridge](https://pi.dev/packages/@lokeraar/pi-opendesign-bridge)
 
@@ -48,7 +49,7 @@ testing something specific, or a fix has not been published yet — during that
 window this is the only way to get it. To pin a release:
 
 ```bash
-pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.2.9
+pi install git:github.com/Lokeraar/pi-opendesign-bridge#v0.3.0
 ```
 
 > **First check how the older copy was installed.** Pi can load an extension as
@@ -110,6 +111,37 @@ logic at all** — completely free. Whatever the endpoint answers for your key i
 the catalog.
 
 ## 📋 Releases
+
+### 0.3.0 — discovery stops costing money
+
+A brand-new model id used to be *measured* on every refresh: up to sixteen
+`POST /chat/completions` calls per unknown id, executed automatically at
+interactive startup and on `/model`. That was billable inference on models you
+never selected (issue #2), and because the full probe could not fit Pi's 15 s
+refresh budget, a large uncurated catalog could never converge — the aborted
+refresh returned before publishing, so the store stayed empty and every retry
+started from zero (issue #1).
+
+Discovery is now **free and instant**: one `GET /v1/models`, already required for
+membership, plus the catalogs Pi ships. `metadata.output_budget` supplies the
+answer ceiling, `context_limit` the window, `architecture.*_modalities` the input
+and output types, and a donor supplies reasoning support and the thinking map.
+
+The ceiling is the **minimum** of every free claim and is **never** derived from
+`context_budget`, which measures prompt capacity rather than answer capacity —
+the old derivation produced HTTP 400 on the Claude family.
+
+The catalog is published before anything slow could run, so an aborted refresh
+persists what it knew instead of discarding it.
+
+Probing still exists as explicit maintenance only (`scripts/probe-models.mjs`,
+`PI_OPENDESIGN_REPROBE=1`); nothing on the refresh path calls it.
+
+Breaking in behaviour, not in configuration: `/model` no longer spends money.
+
+Tests: 68 passing (47 donor + 21 refresh), including a network-blocked regression
+that fails on any `POST` during refresh and on any `context_budget`-derived
+ceiling.
 
 ### 0.2.9 — vendor reasoning levels resolve key by key
 
@@ -279,7 +311,7 @@ Also in this release:
 
 ### 0.1.0 — first release
 
-The live `/models` fetch, the curated layer, and auto-probe for new ids.
+The live `/models` fetch, the curated layer, and free discovery for new ids.
 
 ## ⚡ Quick Start
 
@@ -332,27 +364,42 @@ cache in headless modes. The merged result is stored in
 | **Restore** | Every time Pi creates the provider (`pi -p`, `--list-models`, sessions) | no | Rebuilds the last-known catalog from `models-store.json`, merging again so the curated values win. It only writes back when the merge actually changed something. |
 | **Live fetch** | Interactive startup and `/model` search — 15 second budget, skipped when `PI_OFFLINE` is set | yes | Calls `GET /v1/models`, merges the membership, saves the result. Any error is swallowed on purpose: the curated layer keeps Pi usable regardless. |
 
-### 🧪 Auto-probe for brand-new models
+### 🧪 Discovery costs nothing
 
 When the endpoint announces a model the curated layer has never seen, the bridge
-does not guess: it **measures the model** with about a dozen tiny requests, and
-writes down the answers.
+**does not measure it**. Measuring meant up to sixteen `POST /chat/completions`
+calls — billable inference on a model you never selected (issue #2) — and it did
+not fit in Pi's 15 s `/model` budget, so a large uncurated catalog could never
+converge (issue #1).
 
-- **Reasoning levels.** Each of `minimal · low · medium · high · xhigh · max` is
-  tried. Any level the API rejects is recorded as `null`, so Pi's
-  `clampThinkingLevel` snaps to the closest working level instead of sending one
-  the API refuses.
-- **`off` behaviour.** Sending `reasoning_effort:"none"` only counts as "thinking
-  can be turned off" when the API accepts it **and** the reply contains zero
-  reasoning tokens. If it is rejected (`glm-5.3*`, `gpt-6.1-sol`) or accepted but
-  ignored, the `off` option is hidden from the interface.
-- **Output ceiling.** `max_tokens` is increased step by step until the first
-  rejection; the model gets `min(context_budget, highest accepted)`.
-- **Input types and context.** Taken from the endpoint's own metadata. Pi
-  understands `text` and `image`; audio, video and file ids are not modelled.
-- **If the probe fails partway** — a dropped connection, a timeout — a
-  conservative placeholder is used instead. A failed probe never blocks the
-  refresh.
+Instead the entry is built from two **free** sources, in one single
+`GET /v1/models` request:
+
+- **From the gateway's own metadata.** `context_limit` is the window,
+  `output_budget` is the answer ceiling, and `architecture.*_modalities` says
+  what the model reads and writes.
+- **From the catalogs Pi already ships.** A donor supplies reasoning support, the
+  thinking map and a vendor-declared ceiling.
+
+The **output ceiling is the smallest free claim**: gateway `output_budget`, donor
+ceiling, curated ceiling. It is never derived from `context_budget`, which
+measures how much the prompt may occupy, not how much the model may answer —
+deriving a ceiling from it produced HTTP 400 on the Claude family.
+
+Understating a ceiling costs headroom; overstating it costs a failed request.
+That is why the rule is *minimum*, and why the value is no longer called
+"measured": nothing was measured, and the provenance says so.
+
+The catalog is also **published before anything else could be slow**, so an
+aborted refresh still persists what it already knew.
+
+- **If the gateway states no ceiling and no donor does either**, the conservative
+  placeholder is used. A missing declaration never blocks the refresh.
+
+> [!IMPORTANT]
+> Measuring still exists, but only as **explicit maintenance** —
+> `scripts/probe-models.mjs` and `PI_OPENDESIGN_REPROBE=1`. Both spend real
+> inference and both are opt-in. Nothing on the refresh path calls them.
 
 > [!NOTE]
 > `PI_OPENDESIGN_LIVE=0` disables the live layer entirely (curated catalog only). The same applies via `PI_OFFLINE` for the network phase.
@@ -680,7 +727,7 @@ Layout (flat, mirrors `@fanchaozz/provider-manager`):
 ```
 scripts/probe-models.mjs # curated-layer maintenance CLI (report-only)
 index.ts            # registration + refreshModels wiring (extension entry)
-opendesign-live.ts  # live fetch engine + auto-probe + bundled catalog (node builtins only)
+opendesign-live.ts  # live fetch engine + free discovery + bundled catalog (node builtins only)
 ```
 
 `opendesign-live.ts` intentionally imports nothing from Pi, so its logic can be exercised directly with `node` (≥ 22.6 type stripping) against a mock gateway: membership add/drop, curated precedence, probe budgets, kill switch.

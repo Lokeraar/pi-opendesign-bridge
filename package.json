@@ -8,6 +8,7 @@
     "*.ts",
     "README.md",
     "LICENSE",
+    "scripts/test-omp.mjs",
     "scripts/diagnose.mjs",
     "scripts/test-refresh.mjs",
     "donors-opendesign.ts"
@@ -20,6 +21,7 @@
   "keywords": [
     "pi",
     "pi-package",
+    "omp",
     "pi-extension",
     "provider",
     "ai",
@@ -43,7 +45,7 @@
     "url": "https://github.com/Lokeraar/pi-opendesign-bridge/issues"
   },
   "scripts": {
-    "test": "node --experimental-strip-types scripts/test-donors.mjs && node --experimental-strip-types scripts/test-refresh.mjs",
+    "test": "node --experimental-strip-types scripts/test-donors.mjs && node --experimental-strip-types scripts/test-refresh.mjs && node --experimental-strip-types scripts/test-omp.mjs",
     "diagnose": "node --experimental-strip-types scripts/diagnose.mjs"
   },
   "publishConfig": {

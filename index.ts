@@ -27,6 +27,10 @@
  *   2. Fallback (models.json missing/empty) → register `STATIC_MODELS`
  *      eagerly so findInitialModel() can resolve settings.defaultModel
  *      during startup, plus refreshModels.
+ *   3. omp (OMPCODE=1) → register the catalog resolved once at load, plus an
+ *      API-key `oauth` block. omp implements registerProvider() but never
+ *      calls refreshModels, so a hook here would register an empty provider;
+ *      and it only lists providers in /login when they declare `oauth`.
  *
  * Keep STATIC_MODELS in sync with models.json (both live in opendesign-live.ts
  * now, so there is a single source for the static layer). New gateway models
@@ -64,20 +68,57 @@ function readPackageVersion(): string | undefined {
   }
 }
 import {
+  isOmpHost,
+  makeApiKeyOAuth,
   makeRefreshModels,
+  readHostProviderConfig,
   readProviderConfig,
+  resolveOmpCatalog,
   STATIC_MODELS,
   OPENDESIGN_BASE_URL,
 } from "./opendesign-live.ts";
 
+type OAuthConfig = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]["oauth"]>;
+
+/**
+ * omp registers `models` but never calls `refreshModels`, so the catalog is
+ * resolved here once and handed over as a static list. `oauth` is what puts
+ * OpenDesign into `/login` and `omp login`: without it, a provider the host does
+ * not bundle is invisible there and its key can only come from config.
+ */
+async function ompProvider(agentDir: string) {
+  const cfg = readHostProviderConfig(agentDir);
+  const baseUrl = cfg.baseUrl ?? OPENDESIGN_BASE_URL;
+  const catalog = await resolveOmpCatalog({ agentDir });
+  console.error(
+    `[opendesign-bridge] omp: ${catalog.models.length} models from ${catalog.source}`,
+  );
+  return {
+    name: `OpenDesign ${BRIDGE_VERSION}`,
+    api: "openai-completions",
+    authHeader: true,
+    baseUrl,
+    ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+    models: catalog.models,
+    // The runtime login prompt accepts `secret`; the compat type omits it.
+    oauth: makeApiKeyOAuth({ baseUrl }) as unknown as OAuthConfig,
+  };
+}
+
 export default async function (pi: ExtensionAPI) {
   const agentDir = getAgentDir();
-  const cfg = readProviderConfig(agentDir);
-  const hasModels = Array.isArray(cfg?.models) && cfg.models.length > 0;
 
   // Printed on every load so the number is visible in the session, not buried in
   // a file the user would have to know to open.
   console.error(`[opendesign-bridge] ${BRIDGE_VERSION} · agent dir ${agentDir}`);
+
+  if (isOmpHost()) {
+    pi.registerProvider("opendesign", await ompProvider(agentDir));
+    return;
+  }
+
+  const cfg = readProviderConfig(agentDir);
+  const hasModels = Array.isArray(cfg?.models) && cfg.models.length > 0;
 
   pi.registerProvider("opendesign", {
     name: `OpenDesign ${BRIDGE_VERSION}`,

@@ -36,7 +36,7 @@
  * real logic natively (node ≥ 22.6 type stripping) without the Pi runtime.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type BundledCatalog,
@@ -213,6 +213,239 @@ export function readProviderConfig(agentDir: string): ModelsJsonProviderLike | u
     return provider && typeof provider === "object" ? provider : undefined;
   } catch {
     return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Host compatibility — pi calls refreshModels; omp (a pi fork) does not
+// ---------------------------------------------------------------------------
+
+/**
+ * omp sets OMPCODE=1 in the process that loads extensions. It implements
+ * `registerProvider()` and the static `models` list, but never invokes an
+ * extension provider's `refreshModels` hook: verified against 18.18.8, where a
+ * probe provider's hook was not called at startup, by `omp models`, or by
+ * `omp models refresh`. There the live layer therefore has to run once at load
+ * and ride in as `models`; pi keeps driving the hook.
+ */
+export function isOmpHost(env: Record<string, string | undefined> = process.env): boolean {
+  return env.OMPCODE === "1";
+}
+
+export interface HostProviderConfig {
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+/** Compare only the two fields the bridge needs, from either config format. */
+function pickProvider(doc: unknown): HostProviderConfig | undefined {
+  if (!doc || typeof doc !== "object" || !("providers" in doc)) return undefined;
+  const providers = doc.providers;
+  if (!providers || typeof providers !== "object" || !("opendesign" in providers)) return undefined;
+  const provider = providers.opendesign;
+  if (!provider || typeof provider !== "object") return undefined;
+  return {
+    baseUrl: "baseUrl" in provider && typeof provider.baseUrl === "string" ? provider.baseUrl : undefined,
+    apiKey: "apiKey" in provider && typeof provider.apiKey === "string" ? provider.apiKey : undefined,
+  };
+}
+
+/**
+ * Locate `providers.opendesign` in the host's config.
+ *
+ * Pi uses models.json. omp migrated to models.yml and leaves models.json behind
+ * as a stub (`{ id }`, no limits), so models.yml has to win when it exists —
+ * reading the leftover would make that stub the curated layer and default every
+ * value to 128K/16K. YAML goes through Bun's global parser: omp runs on Bun and
+ * this package has no dependencies. Without one (plain node, tests) models.yml
+ * is skipped and models.json is read as before.
+ */
+export function readHostProviderConfig(
+  agentDir: string,
+  yamlParse?: (text: string) => unknown,
+): HostProviderConfig {
+  const parse =
+    yamlParse ??
+    (globalThis as { Bun?: { YAML?: { parse(text: string): unknown } } }).Bun?.YAML?.parse;
+  if (parse) {
+    try {
+      const cfg = pickProvider(parse(readFileSync(join(agentDir, "models.yml"), "utf8")));
+      if (cfg) return cfg;
+    } catch {
+      // No models.yml (pi) or unreadable: fall through to models.json.
+    }
+  }
+  try {
+    return pickProvider(JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8"))) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// omp registration: one refresh at load, static models, cached for a while
+// ---------------------------------------------------------------------------
+
+/**
+ * Every omp process loads extensions, subagents included, so a network refresh
+ * on each start would mean one GET per agent. Ten minutes keeps the catalog
+ * live without turning one fetch into a herd.
+ */
+export const OMP_CATALOG_TTL_MS = 10 * 60 * 1000;
+
+const OMP_STORE_FILE = "omp-models-store.json";
+
+export interface OmpCatalogOptions {
+  /** Pi agent dir: where models.yml / models.json live. */
+  agentDir: string;
+  /** Bridge state; defaults to `<agentDir>/opendesign`. */
+  stateDir?: string;
+  ttlMs?: number;
+  now?: () => number;
+  /** Test hook: replace the network refresh. */
+  refresh?: ReturnType<typeof makeRefreshModels>;
+}
+
+export interface OmpCatalog {
+  models: LiveModelConfig[];
+  source: "live" | "cache" | "static";
+}
+
+function readOmpStore(file: string): RefreshModelsContextLike["stored"] {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as RefreshModelsContextLike["stored"];
+    return parsed && Array.isArray(parsed.models) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the catalog the way pi's registry would, for a host that will never
+ * call refreshModels. `stored` is fed back through the same two-phase refresh,
+ * so curated values and the retirement ledger keep working unchanged.
+ */
+export async function resolveOmpCatalog(options: OmpCatalogOptions): Promise<OmpCatalog> {
+  const now = options.now ?? Date.now;
+  const ttl = options.ttlMs ?? OMP_CATALOG_TTL_MS;
+  const stateDir = options.stateDir ?? join(options.agentDir, "opendesign");
+  const storeFile = join(stateDir, OMP_STORE_FILE);
+  mkdirSync(stateDir, { recursive: true });
+
+  const stored = readOmpStore(storeFile);
+  const cfg = readHostProviderConfig(options.agentDir);
+  const fresh = stored?.checkedAt !== undefined && now() - stored.checkedAt < ttl;
+  const refresh =
+    options.refresh ??
+    makeRefreshModels({
+      agentDir: stateDir,
+      fallbackBaseUrl: OPENDESIGN_BASE_URL,
+      ...(cfg.baseUrl ? { baseUrlOverride: cfg.baseUrl } : {}),
+    });
+
+  const models = await refresh({
+    credential: cfg.apiKey ? { type: "api_key", key: cfg.apiKey } : undefined,
+    stored,
+    allowNetwork: !fresh,
+    signal: AbortSignal.timeout(20_000),
+    publish: async (publication) => {
+      if (!publication.persist) return true;
+      try {
+        writeFileSync(
+          storeFile,
+          JSON.stringify({
+            models: publication.persist.models,
+            checkedAt: publication.persist.checkedAt ?? now(),
+          }),
+        );
+      } catch {
+        // A read-only agent dir must not take the provider down.
+      }
+      return true;
+    },
+  });
+
+  if (models?.length) return { models, source: fresh ? "cache" : "live" };
+  if (stored?.models?.length) return { models: [...stored.models], source: "cache" };
+  return { models: STATIC_MODELS, source: "static" };
+}
+
+// ---------------------------------------------------------------------------
+// /login support: OpenDesign has no OAuth, so the API key is the login
+// ---------------------------------------------------------------------------
+
+export interface ApiKeyLoginCallbacks {
+  onPrompt(prompt: { message: string; placeholder?: string; secret?: boolean }): Promise<string>;
+}
+
+export interface ApiKeyCredentials {
+  access: string;
+  refresh: string;
+  expires: number;
+}
+
+export interface ApiKeyOAuth {
+  name: string;
+  login(callbacks: ApiKeyLoginCallbacks): Promise<ApiKeyCredentials>;
+  refreshToken(credentials: ApiKeyCredentials): Promise<ApiKeyCredentials>;
+  getApiKey(credentials: ApiKeyCredentials): string;
+}
+
+export interface ApiKeyOAuthOptions {
+  baseUrl?: string;
+  name?: string;
+  /** Test hook. */
+  fetch?: typeof fetch;
+}
+
+/** A static key cannot rotate; a decade out means no refresh round-trip. */
+const STATIC_KEY_LIFETIME_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+
+/**
+ * An `oauth` block is the only way a provider shows up in `/login` (and in
+ * `omp login`) in a host that does not bundle OpenDesign. No browser flow is
+ * invented: the "login" is a masked prompt for the API key, validated against
+ * `/models` before it is stored.
+ */
+export function makeApiKeyOAuth(options: ApiKeyOAuthOptions = {}): ApiKeyOAuth {
+  const baseUrl = options.baseUrl ?? OPENDESIGN_BASE_URL;
+  const fetchImpl = options.fetch ?? fetch;
+  return {
+    name: options.name ?? "OpenDesign",
+    async login(callbacks) {
+      const key = (
+        await callbacks.onPrompt({
+          message: "Paste your OpenDesign API key",
+          placeholder: "sk-amr-...",
+          secret: true,
+        })
+      ).trim();
+      if (!key) throw new Error("No API key entered.");
+      await assertKeyAccepted(key, baseUrl, fetchImpl);
+      return { access: key, refresh: key, expires: Date.now() + STATIC_KEY_LIFETIME_MS };
+    },
+    async refreshToken(credentials) {
+      return credentials;
+    },
+    getApiKey(credentials) {
+      return credentials.access;
+    },
+  };
+}
+
+/** A pasted key is a trust boundary: reject it before it is stored. */
+async function assertKeyAccepted(key: string, baseUrl: string, fetchImpl: typeof fetch): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new Error("Could not reach OpenDesign to validate the key.");
+  }
+  if (!response.ok) {
+    throw new Error(`OpenDesign rejected that key (HTTP ${response.status}).`);
   }
 }
 

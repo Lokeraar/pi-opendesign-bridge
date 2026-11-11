@@ -145,6 +145,46 @@ what the package does rather than a history of how it got there.
 > [!WARNING]
 > If you previously kept local copies in `~/.pi/agent/extensions/opendesign*.ts`, **remove them** before installing this package — two registrations of the same provider fight over the model list.
 
+## 🐚 omp (the pi fork)
+
+The same package installs into [omp](https://github.com/can1357/oh-my-pi) and
+works there, with three host differences handled for you:
+
+```bash
+omp plugin install npm:@lokeraar/pi-opendesign-bridge
+omp login opendesign          # paste the API key; it is validated before saving
+omp models opendesign         # every model your key can use, with real limits
+```
+
+- **`refreshModels` is not called.** omp registers an extension provider's
+  static `models` list but never invokes the dynamic refresh hook (checked on
+  18.18.8 and 18.18.9). The bridge therefore resolves its catalog once at load, using the
+  same curated + live layers, and caches it for ten minutes in
+  `~/.omp/agent/opendesign/` — one `GET /models`, not one per agent process.
+- **Config is `models.yml`.** omp migrated its provider config and leaves an old
+  `models.json` behind. A stub there (an id, no limits) would become the curated
+  layer, so `models.yml` is read first. Only `baseUrl` and `apiKey` are needed:
+
+  ```yaml
+  providers:
+    opendesign:
+      baseUrl: https://amr-link.open-design.ai/v1
+      api: openai-completions
+      apiKey: sk-amr-...
+      authHeader: true
+      compat:
+        supportsDeveloperRole: false
+  ```
+
+- **`/login` needs an `oauth` block.** omp lists only providers it ships with,
+  plus those that declare one — which is why the bridge registers an API-key
+  "login" (masked prompt, validated against `/models`). The stored credential
+  takes precedence over `apiKey` in `models.yml`, and `omp logout opendesign`
+  removes it.
+
+Diagnose the omp path with `omp models opendesign --no-extensions -e ./index.ts`
+when a local copy shadows the installed package.
+
 ## ⚙️ How it works
 
 The provider uses a **two-layer model catalog** to ensure reliability:
